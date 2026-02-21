@@ -1,5 +1,7 @@
 <p align="center">
   <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="src-tauri/icons/logo avec text sans bg.png" />
+    <source media="(prefers-color-scheme: light)" srcset="src-tauri/icons/logo avec text noir sans bg.png" />
     <img src="src-tauri/icons/logo avec text sans bg.png" alt="UniCreate" width="280" />
   </picture>
 </p>
@@ -69,10 +71,10 @@ Download the latest installer from the [Releases](https://github.com/drrakendu78
 4. **Review** the generated YAML files
 5. **Submit** - Sign in with GitHub and submit your PR in one click
 
-## Screenshots
+## Demo
 
 <p align="center">
-  <img src="src-tauri/icons/unicreate app.png" alt="UniCreate App Screenshot" width="820" />
+  <video src="docs/video.mp4" width="820" controls></video>
 </p>
 
 ## Tech Stack
