@@ -74,7 +74,7 @@ Download the latest installer from the [Releases](https://github.com/drrakendu78
 ## Demo
 
 <p align="center">
-  <video src="docs/video.mp4" width="820" controls></video>
+  <video src="https://github.com/drrakendu78/UniCreate/raw/master/docs/video.mp4" width="820" controls></video>
 </p>
 
 ## Tech Stack
