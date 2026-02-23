@@ -1,7 +1,7 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 
-use crate::yaml_generator::YamlFile;
+use crate::yaml_generator::{InstallerDefaults, InstallerSwitches, LocaleData, YamlFile};
 
 // GitHub OAuth App Client ID — public, safe to hardcode
 const GITHUB_CLIENT_ID: &str = "Ov23liEtB73yhdcAHuOR";
@@ -242,6 +242,13 @@ pub fn start_silent_update(download_url: &str, file_name: Option<&str>) -> Resul
         .map(safe_file_name)
         .unwrap_or_else(|| file_name_from_download_url(url));
 
+    // Validate preferred_name: no arg injection, no null bytes, reasonable length
+    if preferred_name.is_empty() || preferred_name.len() > 255
+        || preferred_name.starts_with('-') || preferred_name.contains('\0')
+    {
+        return Err("Invalid update file name".to_string());
+    }
+
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Cannot locate app executable: {}", e))?;
     let current_pid = std::process::id();
@@ -282,7 +289,7 @@ fn parse_github_url(url: &str) -> Option<(String, String, Option<String>)> {
     let parts: Vec<&str> = url.split('/').collect();
 
     // Find "github.com" in parts
-    let gh_idx = parts.iter().position(|p| p.contains("github.com"))?;
+    let gh_idx = parts.iter().position(|p| *p == "github.com")?;
     if parts.len() < gh_idx + 3 {
         return None;
     }
@@ -378,7 +385,7 @@ fn pick_preferred_exe_asset(release: &GitHubRelease) -> Option<&GitHubReleaseAss
 }
 
 pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
     headers.insert(USER_AGENT, HeaderValue::from_static("UniCreate/1.0"));
@@ -397,10 +404,24 @@ pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
     let latest = clean_version(&release.tag_name);
     let has_update = is_newer_version(&latest, &current);
     let (download_url, download_name) = match pick_preferred_exe_asset(&release) {
-        Some(asset) => (
-            Some(asset.browser_download_url.clone()),
-            Some(asset.name.clone()),
-        ),
+        Some(asset) => {
+            // Only trust download URLs from GitHub domains
+            let url_valid = reqwest::Url::parse(&asset.browser_download_url)
+                .map(|u| {
+                    u.scheme() == "https" && {
+                        let h = u.host_str().unwrap_or("");
+                        h == "github.com" || h.ends_with(".github.com")
+                            || h == "objects.githubusercontent.com"
+                            || h.ends_with(".githubusercontent.com")
+                    }
+                })
+                .unwrap_or(false);
+            if url_valid {
+                (Some(asset.browser_download_url.clone()), Some(asset.name.clone()))
+            } else {
+                (None, None)
+            }
+        }
         None => (None, None),
     };
 
@@ -416,12 +437,14 @@ pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
     })
 }
 
-pub async fn fetch_repo_metadata(url: &str) -> Result<RepoMetadata, String> {
+pub async fn fetch_repo_metadata(url: &str, token: Option<&str>) -> Result<RepoMetadata, String> {
     let (owner, repo, tag) = parse_github_url(url)
         .ok_or_else(|| "Not a GitHub URL".to_string())?;
+    validate_github_name(&owner, "owner")?;
+    validate_github_name(&repo, "repo")?;
 
-    let client = reqwest::Client::new();
-    let mut headers = HeaderMap::new();
+    let client = http_client();
+    let mut headers = build_headers_optional(token);
     headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
     headers.insert(USER_AGENT, HeaderValue::from_static("UniCreate/1.0"));
 
@@ -435,6 +458,16 @@ pub async fn fetch_repo_metadata(url: &str) -> Result<RepoMetadata, String> {
         .json()
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
+
+    // Validate tag if present: no path traversal or query injection
+    if let Some(ref t) = tag {
+        if t.is_empty() || t.len() > 128
+            || t.contains('/') || t.contains('\\') || t.contains("..")
+            || t.contains('?') || t.contains('#') || t.contains('%')
+        {
+            return Err("Invalid release tag".to_string());
+        }
+    }
 
     // Fetch release info if we have a tag
     let (version, release_notes, release_url) = if let Some(ref tag_name) = tag {
@@ -507,14 +540,36 @@ pub struct ExistingManifest {
     pub short_description: String,
     pub description: Option<String>,
     pub publisher_url: Option<String>,
+    pub publisher_support_url: Option<String>,
     pub package_url: Option<String>,
     pub license_url: Option<String>,
     pub privacy_url: Option<String>,
+    pub copyright: Option<String>,
+    pub copyright_url: Option<String>,
     pub author: Option<String>,
     pub moniker: Option<String>,
     pub tags: Vec<String>,
+    pub release_notes: Option<String>,
     pub release_notes_url: Option<String>,
     pub package_locale: String,
+    pub minimum_os_version: Option<String>,
+    pub installer_defaults: Option<InstallerDefaults>,
+    pub installer_templates: Vec<ExistingInstallerTemplate>,
+    pub additional_locales: Vec<LocaleData>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ExistingInstallerTemplate {
+    pub architecture: String,
+    pub installer_type: Option<String>,
+    pub installer_locale: Option<String>,
+    pub scope: Option<String>,
+    pub installer_switches: Option<InstallerSwitches>,
+    pub install_modes: Option<Vec<String>>,
+    pub product_code: Option<String>,
+    pub upgrade_behavior: Option<String>,
+    pub elevation_requirement: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -529,52 +584,193 @@ struct GitHubFileContent {
     content: Option<String>,
 }
 
-fn parse_yaml_field(content: &str, field: &str) -> Option<String> {
-    let prefix = format!("{}: ", field);
-    let prefix_empty = format!("{}:", field);
-    for line in content.lines() {
-        let trimmed = line.trim();
-        // Match "Field: value" exactly — avoid prefix collisions (Publisher vs PublisherUrl)
-        if trimmed.starts_with(&prefix) {
-            let value = trimmed[prefix.len()..].trim();
-            let value = value.trim_matches('"').trim_matches('\'');
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        } else if trimmed == prefix_empty {
-            // "Field:" with no value on same line
-            continue;
-        }
-    }
-    None
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct YamlVersionManifest {
+    default_locale: Option<String>,
 }
 
-fn parse_yaml_tags(content: &str) -> Vec<String> {
-    let mut tags = Vec::new();
-    let mut in_tags = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == "Tags:" {
-            in_tags = true;
-            continue;
-        }
-        if in_tags {
-            if trimmed.starts_with("- ") {
-                let tag = trimmed[2..].trim().trim_matches('"').trim_matches('\'');
-                if !tag.is_empty() {
-                    tags.push(tag.to_string());
-                }
-            } else {
-                in_tags = false;
-            }
-        }
-    }
-    tags
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct YamlInstallerManifest {
+    minimum_os_version: Option<String>,
+    installer_locale: Option<String>,
+    installer_type: Option<String>,
+    scope: Option<String>,
+    installer_switches: Option<YamlInstallerSwitches>,
+    install_modes: Option<Vec<String>>,
+    upgrade_behavior: Option<String>,
+    elevation_requirement: Option<String>,
+    #[serde(default)]
+    installers: Vec<YamlInstallerEntry>,
 }
 
-pub async fn fetch_existing_manifest(package_id: &str) -> Result<ExistingManifest, String> {
-    let client = reqwest::Client::new();
-    let mut headers = HeaderMap::new();
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct YamlInstallerEntry {
+    architecture: String,
+    installer_type: Option<String>,
+    installer_locale: Option<String>,
+    scope: Option<String>,
+    installer_switches: Option<YamlInstallerSwitches>,
+    install_modes: Option<Vec<String>>,
+    product_code: Option<String>,
+    upgrade_behavior: Option<String>,
+    elevation_requirement: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase")]
+struct YamlInstallerSwitches {
+    silent: Option<String>,
+    silent_with_progress: Option<String>,
+    interactive: Option<String>,
+    install_location: Option<String>,
+    log: Option<String>,
+    upgrade: Option<String>,
+    custom: Option<String>,
+    repair: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct YamlLocaleManifest {
+    package_locale: Option<String>,
+    publisher: Option<String>,
+    publisher_url: Option<String>,
+    publisher_support_url: Option<String>,
+    privacy_url: Option<String>,
+    author: Option<String>,
+    package_name: Option<String>,
+    package_url: Option<String>,
+    license: Option<String>,
+    license_url: Option<String>,
+    copyright: Option<String>,
+    copyright_url: Option<String>,
+    short_description: Option<String>,
+    description: Option<String>,
+    moniker: Option<String>,
+    tags: Option<Vec<String>>,
+    release_notes: Option<String>,
+    release_notes_url: Option<String>,
+}
+
+fn normalize_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn normalize_vec(value: Option<Vec<String>>) -> Option<Vec<String>> {
+    let values: Vec<String> = value
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
+fn map_switches(value: Option<YamlInstallerSwitches>) -> Option<InstallerSwitches> {
+    let switches = value?;
+    let mapped = InstallerSwitches {
+        silent: normalize_optional(switches.silent),
+        silent_with_progress: normalize_optional(switches.silent_with_progress),
+        interactive: normalize_optional(switches.interactive),
+        install_location: normalize_optional(switches.install_location),
+        log: normalize_optional(switches.log),
+        upgrade: normalize_optional(switches.upgrade),
+        custom: normalize_optional(switches.custom),
+        repair: normalize_optional(switches.repair),
+    };
+
+    if mapped.silent.is_none()
+        && mapped.silent_with_progress.is_none()
+        && mapped.interactive.is_none()
+        && mapped.install_location.is_none()
+        && mapped.log.is_none()
+        && mapped.upgrade.is_none()
+        && mapped.custom.is_none()
+        && mapped.repair.is_none()
+    {
+        None
+    } else {
+        Some(mapped)
+    }
+}
+
+fn has_installer_defaults(defaults: &InstallerDefaults) -> bool {
+    defaults.installer_locale.is_some()
+        || defaults.installer_type.is_some()
+        || defaults.scope.is_some()
+        || defaults.installer_switches.is_some()
+        || defaults.install_modes.is_some()
+        || defaults.upgrade_behavior.is_some()
+        || defaults.elevation_requirement.is_some()
+}
+
+fn parse_locale_manifest(yaml: &str) -> Result<LocaleData, String> {
+    let parsed: YamlLocaleManifest = serde_yaml::from_str(yaml)
+        .map_err(|e| format!("Locale YAML parse error: {}", e))?;
+
+    Ok(LocaleData {
+        package_locale: normalize_optional(parsed.package_locale)
+            .unwrap_or_else(|| "en-US".to_string()),
+        publisher: normalize_optional(parsed.publisher).unwrap_or_default(),
+        publisher_url: normalize_optional(parsed.publisher_url),
+        publisher_support_url: normalize_optional(parsed.publisher_support_url),
+        privacy_url: normalize_optional(parsed.privacy_url),
+        author: normalize_optional(parsed.author),
+        package_name: normalize_optional(parsed.package_name).unwrap_or_default(),
+        package_url: normalize_optional(parsed.package_url),
+        license: normalize_optional(parsed.license).unwrap_or_default(),
+        license_url: normalize_optional(parsed.license_url),
+        copyright: normalize_optional(parsed.copyright),
+        copyright_url: normalize_optional(parsed.copyright_url),
+        short_description: normalize_optional(parsed.short_description).unwrap_or_default(),
+        description: normalize_optional(parsed.description),
+        moniker: normalize_optional(parsed.moniker),
+        tags: normalize_vec(parsed.tags),
+        release_notes: normalize_optional(parsed.release_notes),
+        release_notes_url: normalize_optional(parsed.release_notes_url),
+    })
+}
+
+async fn fetch_github_yaml_file(
+    client: &reqwest::Client,
+    headers: &HeaderMap,
+    file_url: &str,
+) -> Result<String, String> {
+    let file_content: GitHubFileContent = client
+        .get(file_url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let content_b64 = file_content.content.ok_or("Empty file")?;
+    let clean_b64: String = content_b64.chars().filter(|c| !c.is_whitespace()).collect();
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&clean_b64)
+        .map_err(|e| format!("Base64 decode error: {}", e))?;
+    if decoded.len() > 512 * 1024 {
+        return Err("YAML file too large (max 512 KB)".to_string());
+    }
+    String::from_utf8(decoded).map_err(|e| format!("UTF-8 error: {}", e))
+}
+
+pub async fn fetch_existing_manifest(package_id: &str, token: Option<&str>) -> Result<ExistingManifest, String> {
+    validate_package_id(package_id)?;
+    let client = http_client();
+    let mut headers = build_headers_optional(token);
     headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
     headers.insert(USER_AGENT, HeaderValue::from_static("UniCreate/1.0"));
 
@@ -592,12 +788,25 @@ pub async fn fetch_existing_manifest(package_id: &str) -> Result<ExistingManifes
     );
 
     // List versions
-    let versions: Vec<GitHubContentItem> = client
+    let resp = client
         .get(&dir_url)
         .headers(headers.clone())
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}", e))?
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("Package '{}' not found in winget-pkgs", package_id));
+    }
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("GitHub API rate limit exceeded. Please sign in with GitHub to increase the limit.".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("GitHub API error (HTTP {})", status.as_u16()));
+    }
+
+    let versions: Vec<GitHubContentItem> = resp
         .json()
         .await
         .map_err(|_| format!("Package '{}' not found in winget-pkgs", package_id))?;
@@ -615,8 +824,9 @@ pub async fn fetch_existing_manifest(package_id: &str) -> Result<ExistingManifes
         .ok_or_else(|| "No versions found".to_string())?
         .clone();
 
-    // Fetch the default locale file
-    // Try common patterns: .locale.en-US.yaml, .locale.fr-FR.yaml
+    // Validate version from API response before using in URL
+    validate_version(&latest_version)?;
+
     let version_dir_url = format!("{}/{}", dir_url, latest_version);
     let files: Vec<GitHubContentItem> = client
         .get(&version_dir_url)
@@ -628,57 +838,150 @@ pub async fn fetch_existing_manifest(package_id: &str) -> Result<ExistingManifes
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    // Find locale file (defaultLocale)
-    let locale_file = files
+    // Filter out file names with path traversal or unsafe characters
+    let safe_name = |n: &str| -> bool {
+        !n.contains('/') && !n.contains('\\') && !n.contains("..") && !n.contains('?') && !n.contains('#') && !n.contains('%')
+    };
+
+    let locale_files: Vec<&GitHubContentItem> = files
         .iter()
-        .find(|f| f.name.contains(".locale."))
+        .filter(|f| safe_name(&f.name) && f.name.contains(".locale.") && f.name.ends_with(".yaml"))
+        .collect();
+    if locale_files.is_empty() {
+        return Err("No locale file found".to_string());
+    }
+    // Cap locale files to prevent unbounded API calls
+    let locale_files: Vec<_> = locale_files.into_iter().take(20).collect();
+
+    let version_file = files.iter().find(|f| {
+        safe_name(&f.name) && f.name.ends_with(".yaml")
+            && !f.name.contains(".installer.")
+            && !f.name.contains(".locale.")
+    });
+
+    let installer_file = files
+        .iter()
+        .find(|f| safe_name(&f.name) && f.name.ends_with(".installer.yaml"));
+
+    let default_locale_from_version = if let Some(file) = version_file {
+        let version_file_url = format!("{}/{}", version_dir_url, file.name);
+        let version_yaml = fetch_github_yaml_file(&client, &headers, &version_file_url).await?;
+        let parsed_version: YamlVersionManifest = serde_yaml::from_str(&version_yaml)
+            .map_err(|e| format!("Version YAML parse error: {}", e))?;
+        normalize_optional(parsed_version.default_locale)
+    } else {
+        None
+    };
+
+    let mut minimum_os_version = None;
+    let mut installer_defaults = None;
+    let mut installer_templates = Vec::new();
+
+    if let Some(file) = installer_file {
+        let installer_file_url = format!("{}/{}", version_dir_url, file.name);
+        let installer_yaml = fetch_github_yaml_file(&client, &headers, &installer_file_url).await?;
+        let parsed_installer: YamlInstallerManifest = serde_yaml::from_str(&installer_yaml)
+            .map_err(|e| format!("Installer YAML parse error: {}", e))?;
+
+        minimum_os_version = normalize_optional(parsed_installer.minimum_os_version);
+
+        let defaults = InstallerDefaults {
+            installer_locale: normalize_optional(parsed_installer.installer_locale),
+            installer_type: normalize_optional(parsed_installer.installer_type),
+            scope: normalize_optional(parsed_installer.scope),
+            installer_switches: map_switches(parsed_installer.installer_switches),
+            install_modes: normalize_vec(parsed_installer.install_modes),
+            upgrade_behavior: normalize_optional(parsed_installer.upgrade_behavior),
+            elevation_requirement: normalize_optional(parsed_installer.elevation_requirement),
+        };
+
+        if has_installer_defaults(&defaults) {
+            installer_defaults = Some(defaults.clone());
+        }
+
+        for entry in parsed_installer.installers {
+            let architecture = entry.architecture.trim().to_string();
+            if architecture.is_empty() {
+                continue;
+            }
+
+            installer_templates.push(ExistingInstallerTemplate {
+                architecture,
+                installer_type: normalize_optional(entry.installer_type)
+                    .or_else(|| installer_defaults.as_ref().and_then(|d| d.installer_type.clone())),
+                installer_locale: normalize_optional(entry.installer_locale)
+                    .or_else(|| installer_defaults.as_ref().and_then(|d| d.installer_locale.clone())),
+                scope: normalize_optional(entry.scope)
+                    .or_else(|| installer_defaults.as_ref().and_then(|d| d.scope.clone())),
+                installer_switches: map_switches(entry.installer_switches)
+                    .or_else(|| installer_defaults.as_ref().and_then(|d| d.installer_switches.clone())),
+                install_modes: normalize_vec(entry.install_modes)
+                    .or_else(|| installer_defaults.as_ref().and_then(|d| d.install_modes.clone())),
+                product_code: normalize_optional(entry.product_code),
+                upgrade_behavior: normalize_optional(entry.upgrade_behavior)
+                    .or_else(|| installer_defaults.as_ref().and_then(|d| d.upgrade_behavior.clone())),
+                elevation_requirement: normalize_optional(entry.elevation_requirement)
+                    .or_else(|| installer_defaults.as_ref().and_then(|d| d.elevation_requirement.clone())),
+            });
+        }
+    }
+
+    let mut locale_items = Vec::new();
+    for locale_file in locale_files {
+        let locale_file_url = format!("{}/{}", version_dir_url, locale_file.name);
+        let locale_yaml = fetch_github_yaml_file(&client, &headers, &locale_file_url).await?;
+        let locale = parse_locale_manifest(&locale_yaml)?;
+        locale_items.push(locale);
+    }
+
+    let default_locale_hint = default_locale_from_version
+        .or_else(|| locale_items.first().map(|l| l.package_locale.clone()))
+        .unwrap_or_else(|| "en-US".to_string());
+
+    let default_locale = locale_items
+        .iter()
+        .find(|l| l.package_locale.eq_ignore_ascii_case(&default_locale_hint))
+        .cloned()
+        .or_else(|| locale_items.first().cloned())
         .ok_or_else(|| "No locale file found".to_string())?;
 
-    let file_url = format!("{}/{}", version_dir_url, locale_file.name);
-    let file_content: GitHubFileContent = client
-        .get(&file_url)
-        .headers(headers.clone())
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?
-        .json()
-        .await
-        .map_err(|e| format!("Parse error: {}", e))?;
-
-    let content_b64 = file_content.content.ok_or("Empty file")?;
-    // GitHub returns base64 with newlines
-    let clean_b64: String = content_b64.chars().filter(|c| !c.is_whitespace()).collect();
-    use base64::Engine;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(&clean_b64)
-        .map_err(|e| format!("Base64 decode error: {}", e))?;
-    let yaml_content = String::from_utf8(decoded).map_err(|e| format!("UTF-8 error: {}", e))?;
-
-    let package_locale = parse_yaml_field(&yaml_content, "PackageLocale").unwrap_or_else(|| "en-US".to_string());
+    let additional_locales: Vec<LocaleData> = locale_items
+        .into_iter()
+        .filter(|locale| !locale.package_locale.eq_ignore_ascii_case(&default_locale.package_locale))
+        .collect();
 
     Ok(ExistingManifest {
         package_identifier: package_id.to_string(),
         latest_version,
-        publisher: parse_yaml_field(&yaml_content, "Publisher").unwrap_or_default(),
-        package_name: parse_yaml_field(&yaml_content, "PackageName").unwrap_or_default(),
-        license: parse_yaml_field(&yaml_content, "License").unwrap_or_default(),
-        short_description: parse_yaml_field(&yaml_content, "ShortDescription").unwrap_or_default(),
-        description: parse_yaml_field(&yaml_content, "Description"),
-        publisher_url: parse_yaml_field(&yaml_content, "PublisherUrl"),
-        package_url: parse_yaml_field(&yaml_content, "PackageUrl"),
-        license_url: parse_yaml_field(&yaml_content, "LicenseUrl"),
-        privacy_url: parse_yaml_field(&yaml_content, "PrivacyUrl"),
-        author: parse_yaml_field(&yaml_content, "Author"),
-        moniker: parse_yaml_field(&yaml_content, "Moniker"),
-        tags: parse_yaml_tags(&yaml_content),
-        release_notes_url: parse_yaml_field(&yaml_content, "ReleaseNotesUrl"),
-        package_locale,
+        publisher: default_locale.publisher.clone(),
+        package_name: default_locale.package_name.clone(),
+        license: default_locale.license.clone(),
+        short_description: default_locale.short_description.clone(),
+        description: default_locale.description.clone(),
+        publisher_url: default_locale.publisher_url.clone(),
+        publisher_support_url: default_locale.publisher_support_url.clone(),
+        package_url: default_locale.package_url.clone(),
+        license_url: default_locale.license_url.clone(),
+        privacy_url: default_locale.privacy_url.clone(),
+        copyright: default_locale.copyright.clone(),
+        copyright_url: default_locale.copyright_url.clone(),
+        author: default_locale.author.clone(),
+        moniker: default_locale.moniker.clone(),
+        tags: default_locale.tags.clone().unwrap_or_default(),
+        release_notes: default_locale.release_notes.clone(),
+        release_notes_url: default_locale.release_notes_url.clone(),
+        package_locale: default_locale.package_locale.clone(),
+        minimum_os_version,
+        installer_defaults,
+        installer_templates,
+        additional_locales,
     })
 }
 
-pub async fn check_package_exists(package_id: &str) -> Result<bool, String> {
-    let client = reqwest::Client::new();
-    let mut headers = HeaderMap::new();
+pub async fn check_package_exists(package_id: &str, token: Option<&str>) -> Result<bool, String> {
+    validate_package_id(package_id)?;
+    let client = http_client();
+    let mut headers = build_headers_optional(token);
     headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
     headers.insert(USER_AGENT, HeaderValue::from_static("UniCreate/1.0"));
 
@@ -701,7 +1004,12 @@ pub async fn check_package_exists(package_id: &str) -> Result<bool, String> {
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
 
-    Ok(resp.status().is_success())
+    let status = resp.status();
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("GitHub API rate limit exceeded. Please sign in with GitHub to increase the limit.".to_string());
+    }
+
+    Ok(status.is_success())
 }
 
 fn parse_github_pr_url(pr_url: &str) -> Option<(String, String, u64)> {
@@ -710,7 +1018,7 @@ fn parse_github_pr_url(pr_url: &str) -> Option<(String, String, u64)> {
     if parts.len() < 7 {
         return None;
     }
-    if !parts[2].contains("github.com") || parts[5] != "pull" {
+    if parts[2] != "github.com" || parts[5] != "pull" {
         return None;
     }
     let owner = parts[3].to_string();
@@ -742,7 +1050,11 @@ pub async fn fetch_pr_statuses(
     pr_urls: &[String],
     token: Option<&str>,
 ) -> Result<Vec<PrLiveStatus>, String> {
-    let client = reqwest::Client::new();
+    if pr_urls.len() > 20 {
+        return Err("Too many PR URLs (max 20)".to_string());
+    }
+
+    let client = http_client();
     let token_owned = token
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
@@ -762,6 +1074,13 @@ pub async fn fetch_pr_statuses(
             result.push(item);
             continue;
         };
+
+        // Validate owner/repo to prevent URL manipulation
+        if validate_github_name(&owner, "owner").is_err() || validate_github_name(&repo, "repo").is_err() {
+            item.mergeable_state = Some("invalid-url".to_string());
+            result.push(item);
+            continue;
+        }
 
         let endpoint = format!(
             "https://api.github.com/repos/{}/{}/pulls/{}",
@@ -829,9 +1148,10 @@ pub async fn fetch_pr_statuses(
 }
 
 pub async fn fetch_unicreate_recent_prs(token: &str, limit: Option<u32>) -> Result<Vec<RecoveredPr>, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let headers = build_headers(token);
     let user = authenticate_github(token).await?;
+    validate_github_name(&user.login, "username")?;
     let per_page = limit.unwrap_or(10).clamp(1, 30);
     let query = format!(
         "repo:microsoft/winget-pkgs is:pr author:{} \"Created with [UniCreate]\"",
@@ -856,8 +1176,7 @@ pub async fn fetch_unicreate_recent_prs(token: &str, limit: Option<u32>) -> Resu
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("GitHub search failed (HTTP {}): {}", status, body));
+        return Err(format!("GitHub search failed (HTTP {})", status));
     }
 
     let search: SearchIssuesResponse = resp
@@ -876,6 +1195,14 @@ pub async fn fetch_unicreate_recent_prs(token: &str, limit: Option<u32>) -> Resu
             user_login: item.user.login,
         })
         .collect())
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 fn build_headers_optional(token: Option<&str>) -> HeaderMap {
@@ -924,7 +1251,7 @@ struct DeviceTokenResponse {
 
 /// Step 1: Start device flow — returns a user code to show + a device code to poll with
 pub async fn start_device_flow() -> Result<DeviceFlowStart, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .post("https://github.com/login/device/code")
         .header(ACCEPT, "application/json")
@@ -939,8 +1266,7 @@ pub async fn start_device_flow() -> Result<DeviceFlowStart, String> {
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("GitHub returned {} : {}", status, body));
+        return Err(format!("GitHub device flow returned HTTP {}", status));
     }
 
     let data: DeviceCodeResponse = resp
@@ -958,7 +1284,7 @@ pub async fn start_device_flow() -> Result<DeviceFlowStart, String> {
 
 /// Step 2: Poll for access token — returns the token once user has authorized, or an error string
 pub async fn poll_device_flow(device_code: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .post("https://github.com/login/oauth/access_token")
         .header(ACCEPT, "application/json")
@@ -986,9 +1312,160 @@ pub async fn poll_device_flow(device_code: &str) -> Result<String, String> {
         Some("slow_down") => Err("slow_down".to_string()),
         Some("expired_token") => Err("Le code a expiré, veuillez réessayer.".to_string()),
         Some("access_denied") => Err("Accès refusé par l'utilisateur.".to_string()),
-        Some(other) => Err(format!("Erreur: {}", other)),
+        Some(_) => Err("Erreur d'authentification inattendue. Veuillez réessayer.".to_string()),
         None => Err("Réponse inattendue de GitHub".to_string()),
     }
+}
+
+// ── User repos + releases (for quick-select in New Package) ──────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRepoInfo {
+    pub owner: String,
+    pub name: String,
+    pub full_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserRepoApiItem {
+    name: String,
+    full_name: String,
+    owner: UserRepoOwner,
+    fork: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserRepoOwner {
+    login: String,
+}
+
+/// Fetch repos owned by the authenticated user, sorted by most recently pushed.
+/// Only returns non-fork repos.
+pub async fn fetch_user_repos(token: &str, limit: u32) -> Result<Vec<UserRepoInfo>, String> {
+    let client = http_client();
+    let headers = build_headers(token);
+    let per_page = limit.clamp(1, 30);
+
+    let resp = client
+        .get(&format!(
+            "https://api.github.com/user/repos?sort=pushed&per_page={}&affiliation=owner",
+            per_page
+        ))
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error (HTTP {})", resp.status()));
+    }
+
+    let repos: Vec<UserRepoApiItem> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    Ok(repos
+        .into_iter()
+        .filter(|r| {
+            // Exclude forks
+            if r.fork.unwrap_or(false) { return false; }
+            // Exclude profile repos (username/username) — they never have releases
+            if r.name.eq_ignore_ascii_case(&r.owner.login) { return false; }
+            true
+        })
+        .map(|r| UserRepoInfo {
+            owner: r.owner.login,
+            name: r.name,
+            full_name: r.full_name,
+        })
+        .collect())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseAssetInfo {
+    pub name: String,
+    pub download_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoReleaseInfo {
+    pub tag: String,
+    pub assets: Vec<ReleaseAssetInfo>,
+}
+
+fn validate_github_name(name: &str, label: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 100 {
+        return Err(format!("Invalid {}", label));
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        return Err(format!("{} contains invalid characters", label));
+    }
+    Ok(())
+}
+
+pub async fn fetch_repo_releases(owner: &str, repo: &str, count: u32) -> Result<Vec<RepoReleaseInfo>, String> {
+    validate_github_name(owner, "owner")?;
+    validate_github_name(repo, "repo")?;
+    let client = http_client();
+    let per_page = count.clamp(1, 5);
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/releases?per_page={}",
+        owner, repo, per_page
+    );
+
+    let resp = client
+        .get(&url)
+        .header(USER_AGENT, "UniCreate")
+        .header(ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error (HTTP {})", resp.status()));
+    }
+
+    let releases: Vec<GitHubRelease> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let installer_exts = [".exe", ".msi", ".msix", ".msixbundle", ".appx", ".zip"];
+    let allowed_hosts = ["github.com", "objects.githubusercontent.com"];
+
+    Ok(releases
+        .into_iter()
+        .map(|r| RepoReleaseInfo {
+            tag: r.tag_name,
+            assets: r
+                .assets
+                .into_iter()
+                .filter(|a| {
+                    let lower = a.name.to_lowercase();
+                    if !installer_exts.iter().any(|ext| lower.ends_with(ext)) {
+                        return false;
+                    }
+                    // Validate download URL points to a trusted GitHub domain
+                    if let Ok(parsed) = reqwest::Url::parse(&a.browser_download_url) {
+                        if parsed.scheme() != "https" { return false; }
+                        let host = parsed.host_str().unwrap_or("");
+                        allowed_hosts.iter().any(|h| host == *h || host.ends_with(&format!(".{}", h)))
+                    } else {
+                        false
+                    }
+                })
+                .map(|a| ReleaseAssetInfo {
+                    name: a.name,
+                    download_url: a.browser_download_url,
+                })
+                .collect(),
+        })
+        .filter(|r| !r.assets.is_empty())
+        .collect())
 }
 
 // ── PAT Auth (kept for backward compat) ──────────────────
@@ -997,7 +1474,7 @@ pub async fn authenticate_github(token: &str) -> Result<GitHubUser, String> {
     if token.trim().is_empty() {
         return Err("Missing token".to_string());
     }
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get("https://api.github.com/user")
         .headers(build_headers(token))
@@ -1014,13 +1491,55 @@ pub async fn authenticate_github(token: &str) -> Result<GitHubUser, String> {
         .map_err(|e| format!("Parse error: {}", e))
 }
 
+fn validate_package_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 128 {
+        return Err("Package identifier must be between 1 and 128 characters".to_string());
+    }
+    if !id.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_') {
+        return Err("Package identifier contains invalid characters".to_string());
+    }
+    if id.contains("..") || id.starts_with('.') || id.ends_with('.') {
+        return Err("Invalid package identifier format".to_string());
+    }
+    if id.split('.').count() < 2 {
+        return Err("Package identifier must have at least Publisher.Package format".to_string());
+    }
+    Ok(())
+}
+
+fn validate_version(v: &str) -> Result<(), String> {
+    if v.is_empty() || v.len() > 64 {
+        return Err("Version must be between 1 and 64 characters".to_string());
+    }
+    if v.contains('/') || v.contains('\\') || v.contains("..") {
+        return Err("Version contains invalid characters".to_string());
+    }
+    if !v.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+') {
+        return Err("Version contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
 pub async fn submit_manifest(
     token: &str,
     yaml_files: &[YamlFile],
     package_id: &str,
     version: &str,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    validate_package_id(package_id)?;
+    validate_version(version)?;
+
+    // Limit number of files and content size
+    if yaml_files.len() > 10 {
+        return Err("Too many YAML files (max 10)".to_string());
+    }
+    for file in yaml_files {
+        if file.content.len() > 512 * 1024 {
+            return Err("YAML file content too large (max 512 KB)".to_string());
+        }
+    }
+
+    let client = http_client();
     let headers = build_headers(token);
 
     // 1. Get authenticated user
@@ -1128,8 +1647,12 @@ pub async fn submit_manifest(
         .await
         .map_err(|e| format!("Commit parse: {}", e))?;
 
-    // 7. Create branch
-    let branch_name = format!("{}-{}", package_id, version).replace('.', "-");
+    // 7. Create branch (add timestamp to avoid collisions on resubmit)
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let branch_name = format!("{}-{}-{}", package_id, version, timestamp).replace('.', "-");
     let _ref = client
         .post(&format!(
             "https://api.github.com/repos/{}/winget-pkgs/git/refs",

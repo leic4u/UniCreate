@@ -5,6 +5,9 @@ use tauri::{AppHandle, Emitter};
 
 static UPDATE_ARGS: OnceLock<UpdateArgs> = OnceLock::new();
 
+/// Max download size: 2 GB
+const MAX_DOWNLOAD_SIZE: u64 = 2 * 1024 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize)]
 struct UpdateArgs {
     url: String,
@@ -18,6 +21,63 @@ struct ProgressPayload {
     phase: String,
     percent: u32,
     detail: String,
+}
+
+/// Validate URL: must be HTTPS and from a trusted GitHub domain
+fn validate_download_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "Invalid download URL".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("Download URL must use HTTPS".to_string());
+    }
+    let host = parsed.host_str().unwrap_or("");
+    let trusted = host == "github.com"
+        || host.ends_with(".github.com")
+        || host == "objects.githubusercontent.com"
+        || host.ends_with(".githubusercontent.com");
+    if !trusted {
+        return Err("Download URL must point to a GitHub domain".to_string());
+    }
+    Ok(())
+}
+
+/// Sanitize file name: strip to basename, replace dangerous chars
+fn sanitize_file_name(name: &str) -> String {
+    let basename = Path::new(name)
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "update.exe".to_string());
+    let sanitized: String = basename
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            _ => ch,
+        })
+        .collect();
+    if sanitized.is_empty() || sanitized.starts_with('.') || sanitized.contains("..") {
+        "update.exe".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// Validate that the app path looks like the UniCreate executable
+fn validate_app_path(app: &str) -> Result<(), String> {
+    let path = Path::new(app);
+    let file_name = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    // Only allow relaunching the known app executable
+    if !file_name.starts_with("unicreate") || !file_name.ends_with(".exe") {
+        return Err("Invalid app path: must be a UniCreate executable".to_string());
+    }
+    // No path traversal
+    let app_str = app.replace('\\', "/");
+    if app_str.contains("..") {
+        return Err("Invalid app path: path traversal detected".to_string());
+    }
+    Ok(())
 }
 
 fn parse_args() -> Option<UpdateArgs> {
@@ -50,11 +110,23 @@ fn parse_args() -> Option<UpdateArgs> {
         }
     }
 
+    let raw_url = url?;
+    let raw_app = app?;
+    let raw_pid = pid?;
+
+    // Validate inputs at parse time
+    if validate_download_url(&raw_url).is_err() {
+        return None;
+    }
+    if validate_app_path(&raw_app).is_err() {
+        return None;
+    }
+
     Some(UpdateArgs {
-        url: url?,
-        name: name.unwrap_or_default(),
-        app: app?,
-        pid: pid?,
+        url: raw_url,
+        name: sanitize_file_name(&name.unwrap_or_default()),
+        app: raw_app,
+        pid: raw_pid,
     })
 }
 
@@ -91,7 +163,14 @@ async fn start_update(app: AppHandle) -> Result<(), String> {
     emit_progress(&app, "relaunching", 100, "Launching UniCreate...");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    std::process::Command::new(&args.app)
+    // Re-validate app path before execution (defense in depth)
+    validate_app_path(&args.app)?;
+    let app_path = Path::new(&args.app);
+    if !app_path.exists() {
+        return Err("App executable not found after update".to_string());
+    }
+
+    std::process::Command::new(app_path)
         .spawn()
         .map_err(|e| format!("Failed to relaunch: {}", e))?;
 
@@ -151,8 +230,14 @@ async fn download_installer(
 ) -> Result<PathBuf, String> {
     use futures_util::StreamExt;
 
+    // Re-validate URL before downloading (defense in depth)
+    validate_download_url(url)?;
+
     let client = reqwest::Client::builder()
         .user_agent("UniCreate-Updater/1.0")
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(5))
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -162,6 +247,20 @@ async fn download_installer(
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
 
+    // Validate final URL after redirects
+    let final_url = response.url();
+    if final_url.scheme() != "https" {
+        return Err("Redirect to non-HTTPS URL is not allowed".to_string());
+    }
+    let final_host = final_url.host_str().unwrap_or("");
+    let trusted = final_host == "github.com"
+        || final_host.ends_with(".github.com")
+        || final_host == "objects.githubusercontent.com"
+        || final_host.ends_with(".githubusercontent.com");
+    if !trusted {
+        return Err("Redirect to untrusted domain is not allowed".to_string());
+    }
+
     if !response.status().is_success() {
         return Err(format!("Download returned status {}", response.status()));
     }
@@ -169,15 +268,22 @@ async fn download_installer(
     let total_size = response.content_length().unwrap_or(0);
 
     let file_name = if name.is_empty() {
-        url.split('/').last().unwrap_or("update.exe").to_string()
+        sanitize_file_name(url.split('/').last().unwrap_or("update.exe"))
     } else {
-        name.to_string()
+        sanitize_file_name(name)
     };
 
     let temp_dir = std::env::temp_dir().join("unicreate-updater");
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("Cannot create temp dir: {}", e))?;
     let dest = temp_dir.join(&file_name);
+
+    // Verify dest stays within temp_dir
+    let canonical_dir = temp_dir.canonicalize().map_err(|e| format!("Path error: {}", e))?;
+    let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.clone());
+    if !canonical_dest.starts_with(&canonical_dir) {
+        return Err("Path traversal detected".to_string());
+    }
 
     let mut file = tokio::fs::File::create(&dest)
         .await
@@ -191,13 +297,19 @@ async fn download_installer(
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Download stream error: {}", e))?;
+        downloaded += chunk.len() as u64;
+        if downloaded > MAX_DOWNLOAD_SIZE {
+            // Clean up partial file
+            drop(file);
+            let _ = tokio::fs::remove_file(&dest).await;
+            return Err("Download too large (max 2 GB)".to_string());
+        }
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("Write error: {}", e))?;
 
-        downloaded += chunk.len() as u64;
         let percent = if total_size > 0 {
-            ((downloaded as f64 / total_size as f64) * 100.0) as u32
+            ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u32
         } else {
             0
         };
@@ -222,11 +334,24 @@ async fn download_installer(
 }
 
 async fn run_installer(path: &Path) -> Result<(), String> {
+    // Validate installer is in our temp directory
+    let temp_dir = std::env::temp_dir().join("unicreate-updater");
+    if let (Ok(canon_dir), Ok(canon_path)) = (temp_dir.canonicalize(), path.canonicalize()) {
+        if !canon_path.starts_with(&canon_dir) {
+            return Err("Installer path outside temp directory".to_string());
+        }
+    }
+
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+
+    // Only allow .exe and .msi installers
+    if ext != "exe" && ext != "msi" {
+        return Err("Unsupported installer type".to_string());
+    }
 
     let child = if ext == "msi" {
         #[cfg(target_os = "windows")]

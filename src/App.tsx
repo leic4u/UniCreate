@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useManifestStore } from "@/stores/manifest-store";
 import { useToastStore } from "@/stores/toast-store";
+import { useAuthSessionStore } from "@/stores/auth-session-store";
+import { useHistoryStore } from "@/stores/history-store";
 import { StepperHeader } from "@/components/StepperHeader";
 import { Home } from "@/pages/Home";
 import { StepInstaller } from "@/pages/StepInstaller";
@@ -11,6 +13,7 @@ import type { AppUpdateInfo } from "@/lib/types";
 import { CheckCircle2, AlertCircle, Info, X, Minus, Square, Copy, Download, X as XIcon } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ProfileButton } from "@/components/ProfileButton";
 import logoMarkUrl from "@/assets/logo-mark.png";
 
 const appWindow = getCurrentWindow();
@@ -79,6 +82,9 @@ function TitleBar() {
       <div className="flex-1 flex items-center justify-center">
         {!isHome && <StepperHeader />}
       </div>
+
+      {/* Profile */}
+      <ProfileButton />
 
       {/* Right: Window controls */}
       <div className="flex items-center" data-no-drag>
@@ -184,6 +190,13 @@ function App() {
   const addToast = useToastStore((s) => s.addToast);
   const [appUpdateInfo, setAppUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
+
+  // Sync history store active user with auth session
+  const savedSessionUser = useAuthSessionStore((s) => s.savedSessionUser);
+  const setActiveUser = useHistoryStore((s) => s.setActiveUser);
+  useEffect(() => {
+    setActiveUser(savedSessionUser);
+  }, [savedSessionUser, setActiveUser]);
 
   // Ctrl+Enter keyboard shortcut
   useEffect(() => {

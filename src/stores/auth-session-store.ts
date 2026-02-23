@@ -5,9 +5,10 @@ const EPHEMERAL_SESSION_TTL_MS = 15 * 60 * 1000;
 interface AuthSessionStore {
   activeSessionToken: string | null;
   savedSessionUser: string | null;
+  savedSessionAvatar: string | null;
   hasSavedSession: boolean;
   ephemeralSessionExpiresAt: number | null;
-  setSession: (token: string | null, user: string | null, saved: boolean) => void;
+  setSession: (token: string | null, user: string | null, avatar: string | null, saved: boolean) => void;
   touchEphemeralSession: () => void;
   isEphemeralSessionExpired: () => boolean;
   clearSession: () => void;
@@ -16,13 +17,15 @@ interface AuthSessionStore {
 export const useAuthSessionStore = create<AuthSessionStore>((set, get) => ({
   activeSessionToken: null,
   savedSessionUser: null,
+  savedSessionAvatar: null,
   hasSavedSession: false,
   ephemeralSessionExpiresAt: null,
 
-  setSession: (token, user, saved) =>
+  setSession: (token, user, avatar, saved) =>
     set({
       activeSessionToken: token,
       savedSessionUser: user,
+      savedSessionAvatar: avatar,
       hasSavedSession: saved,
       ephemeralSessionExpiresAt: token && !saved ? Date.now() + EPHEMERAL_SESSION_TTL_MS : null,
     }),
@@ -45,6 +48,7 @@ export const useAuthSessionStore = create<AuthSessionStore>((set, get) => ({
     set({
       activeSessionToken: null,
       savedSessionUser: null,
+      savedSessionAvatar: null,
       hasSavedSession: false,
       ephemeralSessionExpiresAt: null,
     }),

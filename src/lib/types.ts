@@ -36,12 +36,35 @@ export interface InstallerSwitches {
 export interface InstallerEntry {
   architecture: Architecture;
   installerType: InstallerType;
+  installerLocale?: string;
   installerUrl: string;
   installerSha256: string;
   scope?: Scope;
   installerSwitches?: InstallerSwitches;
   installModes?: InstallMode[];
   signatureSha256?: string;
+  productCode?: string;
+  upgradeBehavior?: UpgradeBehavior;
+  elevationRequirement?: ElevationRequirement;
+}
+
+export interface InstallerDefaults {
+  installerLocale?: string;
+  installerType?: InstallerType;
+  scope?: Scope;
+  installerSwitches?: InstallerSwitches;
+  installModes?: InstallMode[];
+  upgradeBehavior?: UpgradeBehavior;
+  elevationRequirement?: ElevationRequirement;
+}
+
+export interface InstallerTemplateEntry {
+  architecture: Architecture;
+  installerType?: InstallerType;
+  installerLocale?: string;
+  scope?: Scope;
+  installerSwitches?: InstallerSwitches;
+  installModes?: InstallMode[];
   productCode?: string;
   upgradeBehavior?: UpgradeBehavior;
   elevationRequirement?: ElevationRequirement;
@@ -73,6 +96,7 @@ export interface ManifestData {
   packageVersion: string;
   defaultLocale: string;
   minimumOSVersion?: string;
+  installerDefaults?: InstallerDefaults;
   installers: InstallerEntry[];
   locale: LocaleData;
   additionalLocales?: LocaleData[];
@@ -104,6 +128,22 @@ export interface DeviceFlowStart {
   interval: number;
 }
 
+export interface UserRepoInfo {
+  owner: string;
+  name: string;
+  fullName: string;
+}
+
+export interface ReleaseAssetInfo {
+  name: string;
+  downloadUrl: string;
+}
+
+export interface RepoReleaseInfo {
+  tag: string;
+  assets: ReleaseAssetInfo[];
+}
+
 export interface RepoMetadata {
   owner: string;
   repoName: string;
@@ -126,14 +166,22 @@ export interface ExistingManifest {
   shortDescription: string;
   description: string | null;
   publisherUrl: string | null;
+  publisherSupportUrl: string | null;
   packageUrl: string | null;
   licenseUrl: string | null;
   privacyUrl: string | null;
+  copyright: string | null;
+  copyrightUrl: string | null;
   author: string | null;
   moniker: string | null;
   tags: string[];
+  releaseNotes: string | null;
   releaseNotesUrl: string | null;
   packageLocale: string;
+  minimumOSVersion: string | null;
+  installerDefaults: InstallerDefaults | null;
+  installerTemplates: InstallerTemplateEntry[];
+  additionalLocales: LocaleData[];
 }
 
 export interface RecoveredPr {

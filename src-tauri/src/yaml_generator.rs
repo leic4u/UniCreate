@@ -2,23 +2,37 @@ use serde::{Deserialize, Serialize};
 
 const MANIFEST_SCHEMA_VERSION: &str = "1.9.0";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestData {
     pub package_identifier: String,
     pub package_version: String,
     pub default_locale: String,
     pub minimum_os_version: Option<String>,
+    pub installer_defaults: Option<InstallerDefaults>,
     pub installers: Vec<InstallerEntry>,
     pub locale: LocaleData,
     pub additional_locales: Option<Vec<LocaleData>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallerDefaults {
+    pub installer_locale: Option<String>,
+    pub installer_type: Option<String>,
+    pub scope: Option<String>,
+    pub installer_switches: Option<InstallerSwitches>,
+    pub install_modes: Option<Vec<String>>,
+    pub upgrade_behavior: Option<String>,
+    pub elevation_requirement: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallerEntry {
     pub architecture: String,
     pub installer_type: String,
+    pub installer_locale: Option<String>,
     pub installer_url: String,
     pub installer_sha256: String,
     pub scope: Option<String>,
@@ -30,7 +44,7 @@ pub struct InstallerEntry {
     pub elevation_requirement: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallerSwitches {
     pub silent: Option<String>,
@@ -43,7 +57,7 @@ pub struct InstallerSwitches {
     pub repair: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LocaleData {
     pub package_locale: String,
@@ -178,6 +192,135 @@ fn generate_installer_yaml(m: &ManifestData) -> YamlFile {
         }
     }
 
+    if let Some(ref defaults) = m.installer_defaults {
+        if let Some(ref locale) = defaults.installer_locale {
+            if !locale.is_empty() {
+                content.push_str(&format_yaml_field("InstallerLocale", locale));
+            }
+        }
+        if let Some(ref installer_type) = defaults.installer_type {
+            if !installer_type.is_empty() {
+                content.push_str(&format_yaml_field("InstallerType", installer_type));
+            }
+        }
+        if let Some(ref scope) = defaults.scope {
+            if !scope.is_empty() {
+                content.push_str(&format_yaml_field("Scope", scope));
+            }
+        }
+        if let Some(ref ub) = defaults.upgrade_behavior {
+            if !ub.is_empty() {
+                content.push_str(&format_yaml_field("UpgradeBehavior", ub));
+            }
+        }
+        if let Some(ref er) = defaults.elevation_requirement {
+            if !er.is_empty() {
+                content.push_str(&format_yaml_field("ElevationRequirement", er));
+            }
+        }
+        if let Some(ref modes) = defaults.install_modes {
+            if !modes.is_empty() {
+                content.push_str("InstallModes:\n");
+                for mode in modes {
+                    content.push_str(&format!("- {}\n", format_yaml_scalar(mode)));
+                }
+            }
+        }
+        if let Some(ref switches) = defaults.installer_switches {
+            let silent = switches
+                .silent
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+            let silent_with_progress = switches
+                .silent_with_progress
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+            let custom = switches
+                .custom
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+            let interactive = switches
+                .interactive
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+            let install_location = switches
+                .install_location
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+            let log = switches
+                .log
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+            let upgrade = switches
+                .upgrade
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+            let repair = switches
+                .repair
+                .as_ref()
+                .filter(|v| !v.is_empty())
+                .cloned();
+
+            if silent.is_some()
+                || silent_with_progress.is_some()
+                || custom.is_some()
+                || interactive.is_some()
+                || install_location.is_some()
+                || log.is_some()
+                || upgrade.is_some()
+                || repair.is_some()
+            {
+                content.push_str("InstallerSwitches:\n");
+                if let Some(v) = silent {
+                    content.push_str(&format!("  Silent: {}\n", format_yaml_scalar(&v)));
+                }
+                if let Some(v) = silent_with_progress {
+                    content.push_str(&format!(
+                        "  SilentWithProgress: {}\n",
+                        format_yaml_scalar(&v)
+                    ));
+                }
+                if let Some(v) = interactive {
+                    content.push_str(&format!("  Interactive: {}\n", format_yaml_scalar(&v)));
+                }
+                if let Some(v) = install_location {
+                    content.push_str(&format!(
+                        "  InstallLocation: {}\n",
+                        format_yaml_scalar(&v)
+                    ));
+                }
+                if let Some(v) = log {
+                    content.push_str(&format!("  Log: {}\n", format_yaml_scalar(&v)));
+                }
+                if let Some(v) = upgrade {
+                    content.push_str(&format!("  Upgrade: {}\n", format_yaml_scalar(&v)));
+                }
+                if let Some(v) = custom {
+                    content.push_str(&format!("  Custom: {}\n", format_yaml_scalar(&v)));
+                }
+                if let Some(v) = repair {
+                    content.push_str(&format!("  Repair: {}\n", format_yaml_scalar(&v)));
+                }
+            }
+        }
+    }
+
+    // Helper closures to check if a per-installer value differs from the defaults
+    let default_locale = m.installer_defaults.as_ref().and_then(|d| d.installer_locale.as_ref());
+    let default_type = m.installer_defaults.as_ref().and_then(|d| d.installer_type.as_ref());
+    let default_scope = m.installer_defaults.as_ref().and_then(|d| d.scope.as_ref());
+    let default_ub = m.installer_defaults.as_ref().and_then(|d| d.upgrade_behavior.as_ref());
+    let default_er = m.installer_defaults.as_ref().and_then(|d| d.elevation_requirement.as_ref());
+    let default_modes = m.installer_defaults.as_ref().and_then(|d| d.install_modes.as_ref());
+    let default_switches = m.installer_defaults.as_ref().and_then(|d| d.installer_switches.as_ref());
+
     content.push_str("Installers:\n");
 
     for inst in &m.installers {
@@ -185,10 +328,22 @@ fn generate_installer_yaml(m: &ManifestData) -> YamlFile {
             "- Architecture: {}\n",
             format_yaml_scalar(&inst.architecture)
         ));
-        content.push_str(&format!(
-            "  InstallerType: {}\n",
-            format_yaml_scalar(&inst.installer_type)
-        ));
+        // Only write per-installer fields if they differ from defaults
+        if let Some(ref installer_locale) = inst.installer_locale {
+            if !installer_locale.is_empty() && Some(installer_locale) != default_locale {
+                content.push_str(&format!(
+                    "  InstallerLocale: {}\n",
+                    format_yaml_scalar(installer_locale)
+                ));
+            }
+        }
+        let type_differs = default_type.map_or(true, |dt| !dt.eq_ignore_ascii_case(&inst.installer_type));
+        if type_differs {
+            content.push_str(&format!(
+                "  InstallerType: {}\n",
+                format_yaml_scalar(&inst.installer_type)
+            ));
+        }
         content.push_str(&format!(
             "  InstallerUrl: {}\n",
             format_yaml_scalar(&inst.installer_url)
@@ -196,7 +351,7 @@ fn generate_installer_yaml(m: &ManifestData) -> YamlFile {
         content.push_str(&format!("  InstallerSha256: {}\n", inst.installer_sha256));
 
         if let Some(ref scope) = inst.scope {
-            if !scope.is_empty() {
+            if !scope.is_empty() && Some(scope) != default_scope {
                 content.push_str(&format!("  Scope: {}\n", format_yaml_scalar(scope)));
             }
         }
@@ -211,7 +366,7 @@ fn generate_installer_yaml(m: &ManifestData) -> YamlFile {
             }
         }
         if let Some(ref ub) = inst.upgrade_behavior {
-            if !ub.is_empty() {
+            if !ub.is_empty() && Some(ub) != default_ub {
                 content.push_str(&format!(
                     "  UpgradeBehavior: {}\n",
                     format_yaml_scalar(ub)
@@ -219,7 +374,7 @@ fn generate_installer_yaml(m: &ManifestData) -> YamlFile {
             }
         }
         if let Some(ref er) = inst.elevation_requirement {
-            if !er.is_empty() {
+            if !er.is_empty() && Some(er) != default_er {
                 content.push_str(&format!(
                     "  ElevationRequirement: {}\n",
                     format_yaml_scalar(er)
@@ -227,46 +382,66 @@ fn generate_installer_yaml(m: &ManifestData) -> YamlFile {
             }
         }
         if let Some(ref modes) = inst.install_modes {
-            if !modes.is_empty() {
+            if !modes.is_empty() && Some(modes) != default_modes {
                 content.push_str("  InstallModes:\n");
                 for mode in modes {
-                    content.push_str(&format!("  - {}\n", format_yaml_scalar(mode)));
+                    content.push_str(&format!("    - {}\n", format_yaml_scalar(mode)));
                 }
             }
         }
-        let is_exe = inst.installer_type.eq_ignore_ascii_case("exe");
-        let silent = inst
-            .installer_switches
-            .as_ref()
-            .and_then(|s| s.silent.as_ref())
-            .filter(|v| !v.is_empty())
-            .cloned()
-            .or_else(|| if is_exe { Some("/S".to_string()) } else { None });
-        let silent_with_progress = inst
-            .installer_switches
-            .as_ref()
-            .and_then(|s| s.silent_with_progress.as_ref())
-            .filter(|v| !v.is_empty())
-            .cloned()
-            .or_else(|| if is_exe { Some("/S".to_string()) } else { None });
-        let custom = inst
-            .installer_switches
-            .as_ref()
-            .and_then(|s| s.custom.as_ref())
-            .filter(|v| !v.is_empty())
-            .cloned();
 
-        let interactive = inst.installer_switches.as_ref().and_then(|s| s.interactive.as_ref()).filter(|v| !v.is_empty()).cloned();
-        let install_location = inst.installer_switches.as_ref().and_then(|s| s.install_location.as_ref()).filter(|v| !v.is_empty()).cloned();
-        let log = inst.installer_switches.as_ref().and_then(|s| s.log.as_ref()).filter(|v| !v.is_empty()).cloned();
-        let upgrade = inst.installer_switches.as_ref().and_then(|s| s.upgrade.as_ref()).filter(|v| !v.is_empty()).cloned();
-        let repair = inst.installer_switches.as_ref().and_then(|s| s.repair.as_ref()).filter(|v| !v.is_empty()).cloned();
+        // Only write per-installer switches if they differ from defaults
+        let has_default_switches = default_switches.is_some();
+        let inst_switches = &inst.installer_switches;
+        let switches_same_as_default = has_default_switches && inst_switches.as_ref().map_or(false, |s| {
+            let ds = default_switches.unwrap();
+            s.silent == ds.silent
+                && s.silent_with_progress == ds.silent_with_progress
+                && s.custom == ds.custom
+                && s.interactive == ds.interactive
+                && s.install_location == ds.install_location
+                && s.log == ds.log
+                && s.upgrade == ds.upgrade
+                && s.repair == ds.repair
+        });
 
-        if silent.is_some() || silent_with_progress.is_some() || custom.is_some()
-            || interactive.is_some() || install_location.is_some() || log.is_some()
-            || upgrade.is_some() || repair.is_some()
-        {
-            content.push_str("  InstallerSwitches:\n");
+        if switches_same_as_default {
+            // Skip — already covered by defaults
+        } else {
+            let is_exe = inst.installer_type.eq_ignore_ascii_case("exe");
+            let no_default_switches = !has_default_switches;
+            let silent = inst
+                .installer_switches
+                .as_ref()
+                .and_then(|s| s.silent.as_ref())
+                .filter(|v| !v.is_empty())
+                .cloned()
+                .or_else(|| if is_exe && no_default_switches { Some("/S".to_string()) } else { None });
+            let silent_with_progress = inst
+                .installer_switches
+                .as_ref()
+                .and_then(|s| s.silent_with_progress.as_ref())
+                .filter(|v| !v.is_empty())
+                .cloned()
+                .or_else(|| if is_exe && no_default_switches { Some("/S".to_string()) } else { None });
+            let custom = inst
+                .installer_switches
+                .as_ref()
+                .and_then(|s| s.custom.as_ref())
+                .filter(|v| !v.is_empty())
+                .cloned();
+
+            let interactive = inst.installer_switches.as_ref().and_then(|s| s.interactive.as_ref()).filter(|v| !v.is_empty()).cloned();
+            let install_location = inst.installer_switches.as_ref().and_then(|s| s.install_location.as_ref()).filter(|v| !v.is_empty()).cloned();
+            let log = inst.installer_switches.as_ref().and_then(|s| s.log.as_ref()).filter(|v| !v.is_empty()).cloned();
+            let upgrade = inst.installer_switches.as_ref().and_then(|s| s.upgrade.as_ref()).filter(|v| !v.is_empty()).cloned();
+            let repair = inst.installer_switches.as_ref().and_then(|s| s.repair.as_ref()).filter(|v| !v.is_empty()).cloned();
+
+            if silent.is_some() || silent_with_progress.is_some() || custom.is_some()
+                || interactive.is_some() || install_location.is_some() || log.is_some()
+                || upgrade.is_some() || repair.is_some()
+            {
+                content.push_str("  InstallerSwitches:\n");
             if let Some(v) = silent {
                 content.push_str(&format!("    Silent: {}\n", format_yaml_scalar(&v)));
             }
@@ -293,6 +468,7 @@ fn generate_installer_yaml(m: &ManifestData) -> YamlFile {
             }
             if let Some(v) = repair {
                 content.push_str(&format!("    Repair: {}\n", format_yaml_scalar(&v)));
+            }
             }
         }
     }

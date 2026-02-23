@@ -25,6 +25,34 @@ async fn save_yaml_files(
     package_id: String,
     version: String,
 ) -> Result<(), String> {
+    // Limit number of files and content size
+    if files.len() > 10 {
+        return Err("Too many YAML files (max 10)".to_string());
+    }
+    for file in &files {
+        if file.content.len() > 512 * 1024 {
+            return Err("YAML file content too large (max 512 KB)".to_string());
+        }
+    }
+
+    // Validate package_id format
+    if package_id.is_empty() || package_id.len() > 128 {
+        return Err("Package identifier must be between 1 and 128 characters".to_string());
+    }
+    if !package_id.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_') {
+        return Err("Invalid package identifier: contains forbidden characters".to_string());
+    }
+    if package_id.contains("..") || package_id.starts_with('.') || package_id.ends_with('.') {
+        return Err("Invalid package identifier format".to_string());
+    }
+    // Validate version
+    if version.is_empty() || version.len() > 64 {
+        return Err("Version must be between 1 and 64 characters".to_string());
+    }
+    if version.contains('/') || version.contains('\\') || version.contains("..") {
+        return Err("Invalid version format".to_string());
+    }
+
     let first_letter = package_id.chars().next().unwrap_or('_').to_lowercase().to_string();
     let parts: Vec<&str> = package_id.splitn(2, '.').collect();
     let (publisher, package) = if parts.len() == 2 {
@@ -45,7 +73,20 @@ async fn save_yaml_files(
         .map_err(|e| format!("Cannot create directory: {}", e))?;
 
     for file in &files {
+        // Validate file_name: must end with .yaml, no path separators
+        if file.file_name.contains('/') || file.file_name.contains('\\') || file.file_name.contains("..") {
+            return Err(format!("Invalid file name: {}", file.file_name));
+        }
+        if !file.file_name.ends_with(".yaml") {
+            return Err(format!("Only .yaml files are allowed: {}", file.file_name));
+        }
         let path = output_dir.join(&file.file_name);
+        // Verify path stays within output_dir
+        let canonical_dir = output_dir.canonicalize().map_err(|e| format!("Path error: {}", e))?;
+        let canonical_file = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !canonical_file.starts_with(&canonical_dir) {
+            return Err("Path traversal detected".to_string());
+        }
         std::fs::write(&path, &file.content)
             .map_err(|e| format!("Cannot write file: {}", e))?;
     }
@@ -53,7 +94,7 @@ async fn save_yaml_files(
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("explorer")
-            .arg(output_dir.to_string_lossy().to_string())
+            .arg(output_dir.as_os_str())
             .spawn();
     }
 
@@ -61,18 +102,18 @@ async fn save_yaml_files(
 }
 
 #[tauri::command]
-async fn fetch_existing_manifest(package_id: String) -> Result<github::ExistingManifest, String> {
-    github::fetch_existing_manifest(&package_id).await
+async fn fetch_existing_manifest(package_id: String, token: Option<String>) -> Result<github::ExistingManifest, String> {
+    github::fetch_existing_manifest(&package_id, token.as_deref()).await
 }
 
 #[tauri::command]
-async fn fetch_repo_metadata(url: String) -> Result<github::RepoMetadata, String> {
-    github::fetch_repo_metadata(&url).await
+async fn fetch_repo_metadata(url: String, token: Option<String>) -> Result<github::RepoMetadata, String> {
+    github::fetch_repo_metadata(&url, token.as_deref()).await
 }
 
 #[tauri::command]
-async fn check_package_exists(package_id: String) -> Result<bool, String> {
-    github::check_package_exists(&package_id).await
+async fn check_package_exists(package_id: String, token: Option<String>) -> Result<bool, String> {
+    github::check_package_exists(&package_id, token.as_deref()).await
 }
 
 #[tauri::command]
@@ -98,6 +139,23 @@ async fn poll_device_flow(device_code: String) -> Result<String, String> {
 #[tauri::command]
 async fn authenticate_github(token: String) -> Result<github::GitHubUser, String> {
     github::authenticate_github(&token).await
+}
+
+#[tauri::command]
+async fn fetch_user_repos(
+    token: String,
+    limit: Option<u32>,
+) -> Result<Vec<github::UserRepoInfo>, String> {
+    github::fetch_user_repos(&token, limit.unwrap_or(15)).await
+}
+
+#[tauri::command]
+async fn fetch_repo_releases(
+    owner: String,
+    repo: String,
+    count: Option<u32>,
+) -> Result<Vec<github::RepoReleaseInfo>, String> {
+    github::fetch_repo_releases(&owner, &repo, count.unwrap_or(2)).await
 }
 
 #[tauri::command]
@@ -174,6 +232,8 @@ pub fn run() {
             start_device_flow,
             poll_device_flow,
             authenticate_github,
+            fetch_user_repos,
+            fetch_repo_releases,
             fetch_unicreate_recent_prs,
             fetch_pr_statuses,
             submit_manifest,

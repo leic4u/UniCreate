@@ -1,4 +1,5 @@
 import { useManifestStore } from "@/stores/manifest-store";
+import { useAuthSessionStore } from "@/stores/auth-session-store";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, ArrowRight, ChevronDown, X, Globe, Check, AlertCircle, Plus, Trash2, Languages } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
@@ -72,6 +73,7 @@ function TagsInput({ value, onChange }: { value: string[]; onChange: (tags: stri
 
 export function StepMetadata() {
   const { manifest, setPackageIdentifier, setPackageVersion, setDefaultLocale, setLocale, setStep, addAdditionalLocale, updateAdditionalLocale, removeAdditionalLocale } = useManifestStore();
+  const activeSessionToken = useAuthSessionStore((s) => s.activeSessionToken);
   const [showOptional, setShowOptional] = useState(false);
   const [showLocales, setShowLocales] = useState(!!manifest.additionalLocales?.length);
   const locale = manifest.locale;
@@ -87,12 +89,12 @@ export function StepMetadata() {
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       try {
-        const exists = await invoke<boolean>("check_package_exists", { packageId: id });
+        const exists = await invoke<boolean>("check_package_exists", { packageId: id, token: activeSessionToken ?? null });
         setIdStatus(exists ? "exists" : "available");
       } catch { setIdStatus("idle"); }
     }, 800);
     return () => clearTimeout(debounceRef.current);
-  }, [manifest.packageIdentifier, idFormatValid]);
+  }, [manifest.packageIdentifier, idFormatValid, activeSessionToken]);
 
   const idSuffix = (() => {
     if (idStatus === "checking") return <div className="h-3 w-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />;
@@ -163,9 +165,12 @@ export function StepMetadata() {
             <Field label="Description" value={locale.description || ""} onChange={(v) => setLocale({ description: v })} placeholder="A longer description..." multiline />
             <div className="grid grid-cols-2 gap-3">
               <Field label="Publisher URL" value={locale.publisherUrl || ""} onChange={(v) => setLocale({ publisherUrl: v })} placeholder="https://..." />
+              <Field label="Publisher Support URL" value={locale.publisherSupportUrl || ""} onChange={(v) => setLocale({ publisherSupportUrl: v })} placeholder="https://..." />
               <Field label="Package URL" value={locale.packageUrl || ""} onChange={(v) => setLocale({ packageUrl: v })} placeholder="https://..." />
               <Field label="License URL" value={locale.licenseUrl || ""} onChange={(v) => setLocale({ licenseUrl: v })} placeholder="https://..." />
               <Field label="Privacy URL" value={locale.privacyUrl || ""} onChange={(v) => setLocale({ privacyUrl: v })} placeholder="https://..." />
+              <Field label="Copyright" value={locale.copyright || ""} onChange={(v) => setLocale({ copyright: v })} placeholder="Copyright (c) ..." />
+              <Field label="Copyright URL" value={locale.copyrightUrl || ""} onChange={(v) => setLocale({ copyrightUrl: v })} placeholder="https://..." />
               <Field label="Author" value={locale.author || ""} onChange={(v) => setLocale({ author: v })} />
               <Field label="Moniker" value={locale.moniker || ""} onChange={(v) => setLocale({ moniker: v })} placeholder="Short alias (e.g. vscode)" hint="Used for quick search" />
             </div>

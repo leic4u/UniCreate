@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type {
   ManifestData,
   InstallerEntry,
+  InstallerTemplateEntry,
   LocaleData,
   WizardStep,
   YamlFile,
@@ -14,6 +15,7 @@ import { repoMappings } from "@/lib/repo-mappings";
 interface ManifestStore {
   currentStep: WizardStep;
   manifest: ManifestData;
+  updateInstallerTemplates: InstallerTemplateEntry[];
   generatedYaml: YamlFile[];
   isAnalyzing: boolean;
   isSubmitting: boolean;
@@ -64,6 +66,7 @@ const defaultManifest: ManifestData = {
 export const useManifestStore = create<ManifestStore>()(persist((set) => ({
   currentStep: "home",
   manifest: { ...defaultManifest },
+  updateInstallerTemplates: [],
   generatedYaml: [],
   isAnalyzing: false,
   isSubmitting: false,
@@ -183,6 +186,8 @@ export const useManifestStore = create<ManifestStore>()(persist((set) => ({
         ...s.manifest,
         packageIdentifier: existing.packageIdentifier,
         defaultLocale: existing.packageLocale,
+        minimumOSVersion: existing.minimumOSVersion || undefined,
+        installerDefaults: existing.installerDefaults || undefined,
         locale: {
           packageLocale: existing.packageLocale,
           publisher: existing.publisher,
@@ -191,21 +196,27 @@ export const useManifestStore = create<ManifestStore>()(persist((set) => ({
           shortDescription: existing.shortDescription,
           description: existing.description || undefined,
           publisherUrl: existing.publisherUrl || undefined,
+          publisherSupportUrl: existing.publisherSupportUrl || undefined,
           packageUrl: existing.packageUrl || undefined,
           licenseUrl: existing.licenseUrl || undefined,
           privacyUrl: existing.privacyUrl || undefined,
+          copyright: existing.copyright || undefined,
+          copyrightUrl: existing.copyrightUrl || undefined,
           author: existing.author || undefined,
           moniker: existing.moniker || undefined,
           tags: existing.tags.length ? existing.tags : undefined,
-          // releaseNotesUrl intentionally omitted — will be set from the new release URL
+          // releaseNotes and releaseNotesUrl intentionally omitted — will be set from the new release
         },
+        additionalLocales: existing.additionalLocales.length ? existing.additionalLocales : undefined,
       },
+      updateInstallerTemplates: existing.installerTemplates,
     })),
 
   reset: () =>
     set({
       currentStep: "home",
       manifest: { ...defaultManifest, locale: { ...defaultLocale } },
+      updateInstallerTemplates: [],
       generatedYaml: [],
       isAnalyzing: false,
       isSubmitting: false,
