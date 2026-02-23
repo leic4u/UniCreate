@@ -237,4 +237,4 @@ Impacted files:
 |------|---------|
 | `UniCreate_1.0.4_x64-setup.exe` | `2336574e0161724a6276b50cd9ca7fbf3e69a30455309dcff5ef11d5d63310ae` |
 | `UniCreate_1.0.4_x64_en-US.msi` | `c7a43390f50a7b9c291471429aae8912f3d8b039089a81b6e530f0b069ce9aa0` |
-| `unicreate.exe` (portable) | `f5cea50d3825a679b0a8d688e74a3e8a0b40e1df9b5fedb32008aed959b458d7` |
+| `UniCreate_1.0.4_x64-portable.exe` | `f5cea50d3825a679b0a8d688e74a3e8a0b40e1df9b5fedb32008aed959b458d7` |
