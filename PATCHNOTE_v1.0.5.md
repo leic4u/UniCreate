@@ -129,6 +129,6 @@ Checksums below match binaries produced by `npm run tauri build`.
 
 | File | Size (bytes) | SHA256 |
 |---|---:|---|
-| `UniCreate_1.0.5_x64-setup.exe` | — | — |
-| `UniCreate_1.0.5_x64_en-US.msi` | — | — |
-| `UniCreate_1.0.5_x64_portable.exe` | — | — |
+| `UniCreate_1.0.5_x64-setup.exe` | 16,554,589 | `37744a223faef98939778d8aec1dd053436bd757bf9a98cdcd108d7607f47433` |
+| `UniCreate_1.0.5_x64_en-US.msi` | 19,931,136 | `1bfa956e2c52971e464c28193a4b2554a4cef6b417691b4dbc52abc1a0adef4a` |
+| `UniCreate_1.0.5_x64_portable.exe` | 25,069,056 | `d4df565dda4e72daa3f9a8378a5be0c12b26abf91d15184445e9ff2ee5f88b59` |
