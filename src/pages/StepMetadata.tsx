@@ -251,7 +251,7 @@ export function StepMetadata() {
         )}
       </section>
 
-      <div className="flex items-center justify-between pt-1">
+      <div className="sticky bottom-0 flex items-center justify-between bg-background/95 backdrop-blur-sm pt-4 pb-2 -mx-6 px-6">
         <button onClick={() => setStep("installer")} className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
           <ArrowLeft className="h-3.5 w-3.5" />{t("metadata.back")}
         </button>
