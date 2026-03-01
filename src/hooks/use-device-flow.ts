@@ -20,6 +20,8 @@ export function useDeviceFlow(rememberSession: boolean) {
     flow: null, polling: false, error: null, copied: false,
   });
   const pollingRef = useRef(false);
+  const rememberRef = useRef(rememberSession);
+  rememberRef.current = rememberSession;
 
   useEffect(() => {
     return () => { pollingRef.current = false; };
@@ -36,12 +38,13 @@ export function useDeviceFlow(rememberSession: boolean) {
         setState({ flow: null, polling: false, error: null, copied: false });
 
         const user = await invoke<GitHubUser>("authenticate_github", { token: accessToken }).catch(() => null);
-        setSession(accessToken, user?.login ?? null, user?.avatarUrl ?? null, false);
 
-        if (rememberSession) {
+        if (rememberRef.current) {
           const stored = await invoke("store_github_token", { token: accessToken }).then(() => true).catch(() => false);
           setSession(accessToken, user?.login ?? null, user?.avatarUrl ?? null, stored);
           if (!stored) addToast("Connected for this session only (could not persist token).", "info");
+        } else {
+          setSession(accessToken, user?.login ?? null, user?.avatarUrl ?? null, false);
         }
 
         addToast(`Connected as ${user?.login ?? "GitHub user"}`, "success");
@@ -55,7 +58,7 @@ export function useDeviceFlow(rememberSession: boolean) {
         return;
       }
     }
-  }, [rememberSession, setSession, addToast]);
+  }, [setSession, addToast]);
 
   const start = useCallback(async () => {
     setState((s) => ({ ...s, error: null }));

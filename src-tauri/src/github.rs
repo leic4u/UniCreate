@@ -1,7 +1,20 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 
 use crate::yaml_generator::{InstallerDefaults, InstallerSwitches, LocaleData, YamlFile};
+
+static PROXY_URL: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn set_proxy_url(url: &str) {
+    let trimmed = url.trim().to_string();
+    let mut lock = PROXY_URL.lock().unwrap_or_else(|e| e.into_inner());
+    if trimmed.is_empty() {
+        *lock = None;
+    } else {
+        *lock = Some(trimmed);
+    }
+}
 
 // GitHub OAuth App Client ID — public, safe to hardcode
 const GITHUB_CLIENT_ID: &str = "Ov23liEtB73yhdcAHuOR";
@@ -978,6 +991,77 @@ pub async fn fetch_existing_manifest(package_id: &str, token: Option<&str>) -> R
     })
 }
 
+/// Fetch the raw YAML file contents for a given package ID + version from winget-pkgs.
+/// Returns a list of { fileName, content } pairs for diffing against newly generated YAML.
+pub async fn fetch_existing_yaml_files(
+    package_id: &str,
+    version: &str,
+    token: Option<&str>,
+) -> Result<Vec<YamlFile>, String> {
+    validate_package_id(package_id)?;
+    validate_version(version)?;
+    let client = http_client();
+    let mut headers = build_headers_optional(token);
+    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
+    headers.insert(USER_AGENT, HeaderValue::from_static("UniCreate/1.0"));
+
+    let segments: Vec<&str> = package_id.split('.').collect();
+    if segments.len() < 2 {
+        return Err("Invalid package identifier format".to_string());
+    }
+    let first_letter = segments[0].chars().next().unwrap_or('_').to_lowercase().to_string();
+    let package_path = segments.join("/");
+
+    let version_dir_url = format!(
+        "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/{}/{}/{}",
+        first_letter, package_path, version
+    );
+
+    let resp = client
+        .get(&version_dir_url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("Version '{}' not found for '{}'", version, package_id));
+    }
+    if !status.is_success() {
+        return Err(format!("GitHub API error (HTTP {})", status.as_u16()));
+    }
+
+    let files: Vec<GitHubContentItem> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let safe_name = |n: &str| -> bool {
+        !n.contains('/') && !n.contains('\\') && !n.contains("..") && n.ends_with(".yaml")
+    };
+
+    let yaml_files: Vec<&GitHubContentItem> = files
+        .iter()
+        .filter(|f| safe_name(&f.name) && f.item_type == "file")
+        .take(10)
+        .collect();
+
+    let mut result = Vec::new();
+    for file in yaml_files {
+        let file_url = format!("{}/{}", version_dir_url, file.name);
+        match fetch_github_yaml_file(&client, &headers, &file_url).await {
+            Ok(content) => result.push(YamlFile {
+                file_name: file.name.clone(),
+                content,
+            }),
+            Err(_) => continue,
+        }
+    }
+
+    Ok(result)
+}
+
 pub async fn check_package_exists(package_id: &str, token: Option<&str>) -> Result<bool, String> {
     validate_package_id(package_id)?;
     let client = http_client();
@@ -1198,11 +1282,17 @@ pub async fn fetch_unicreate_recent_prs(token: &str, limit: Option<u32>) -> Resu
 }
 
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .connect_timeout(std::time::Duration::from_secs(10));
+
+    if let Some(proxy_url) = PROXY_URL.lock().unwrap_or_else(|e| e.into_inner()).as_deref() {
+        if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
 fn build_headers_optional(token: Option<&str>) -> HeaderMap {
@@ -1525,6 +1615,7 @@ pub async fn submit_manifest(
     yaml_files: &[YamlFile],
     package_id: &str,
     version: &str,
+    is_update: bool,
 ) -> Result<String, String> {
     validate_package_id(package_id)?;
     validate_version(version)?;
@@ -1636,7 +1727,7 @@ pub async fn submit_manifest(
         ))
         .headers(headers.clone())
         .json(&CreateCommitRequest {
-            message: format!("New version: {} version {}", package_id, version),
+            message: format!("{}: {} version {}", if is_update { "New version" } else { "New package" }, package_id, version),
             tree: tree.sha,
             parents: vec![base_sha.clone()],
         })
@@ -1672,7 +1763,7 @@ pub async fn submit_manifest(
         .post("https://api.github.com/repos/microsoft/winget-pkgs/pulls")
         .headers(headers.clone())
         .json(&CreatePrRequest {
-            title: format!("New version: {} version {}", package_id, version),
+            title: format!("{}: {} version {}", if is_update { "New version" } else { "New package" }, package_id, version),
             head: format!("{}:{}", username, branch_name),
             base: "master".to_string(),
             body: format!(

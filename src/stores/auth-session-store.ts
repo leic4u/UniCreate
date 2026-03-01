@@ -1,6 +1,9 @@
 import { create } from "zustand";
+import { useSettingsStore } from "./settings-store";
 
-const EPHEMERAL_SESSION_TTL_MS = 15 * 60 * 1000;
+function getEphemeralTtlMs(): number {
+  return useSettingsStore.getState().ephemeralTimeoutMinutes * 60 * 1000;
+}
 
 interface AuthSessionStore {
   activeSessionToken: string | null;
@@ -27,13 +30,13 @@ export const useAuthSessionStore = create<AuthSessionStore>((set, get) => ({
       savedSessionUser: user,
       savedSessionAvatar: avatar,
       hasSavedSession: saved,
-      ephemeralSessionExpiresAt: token && !saved ? Date.now() + EPHEMERAL_SESSION_TTL_MS : null,
+      ephemeralSessionExpiresAt: token && !saved ? Date.now() + getEphemeralTtlMs() : null,
     }),
 
   touchEphemeralSession: () => {
     const state = get();
     if (!state.activeSessionToken || state.hasSavedSession) return;
-    set({ ephemeralSessionExpiresAt: Date.now() + EPHEMERAL_SESSION_TTL_MS });
+    set({ ephemeralSessionExpiresAt: Date.now() + getEphemeralTtlMs() });
   },
 
   isEphemeralSessionExpired: () => {

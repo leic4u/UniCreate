@@ -20,6 +20,7 @@ interface ManifestStore {
   isAnalyzing: boolean;
   isSubmitting: boolean;
   isUpdate: boolean;
+  previousVersion: string | null;
 
   setStep: (step: WizardStep) => void;
   setPackageIdentifier: (id: string) => void;
@@ -71,6 +72,7 @@ export const useManifestStore = create<ManifestStore>()(persist((set) => ({
   isAnalyzing: false,
   isSubmitting: false,
   isUpdate: false,
+  previousVersion: null,
 
   setStep: (step) => set({ currentStep: step }),
 
@@ -182,6 +184,7 @@ export const useManifestStore = create<ManifestStore>()(persist((set) => ({
 
   applyExistingManifest: (existing) =>
     set((s) => ({
+      previousVersion: existing.latestVersion,
       manifest: {
         ...s.manifest,
         packageIdentifier: existing.packageIdentifier,
@@ -221,6 +224,7 @@ export const useManifestStore = create<ManifestStore>()(persist((set) => ({
       isAnalyzing: false,
       isSubmitting: false,
       isUpdate: false,
+      previousVersion: null,
     }),
 }), {
   name: "unicreate-manifest",
@@ -228,5 +232,6 @@ export const useManifestStore = create<ManifestStore>()(persist((set) => ({
     currentStep: state.currentStep,
     manifest: state.manifest,
     isUpdate: state.isUpdate,
+    previousVersion: state.previousVersion,
   }),
 }));

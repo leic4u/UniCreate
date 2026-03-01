@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { ArrowLeft, ArrowRight, ChevronDown, X, Globe, Check, AlertCircle, Plus, Trash2, Languages } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useT } from "@/lib/i18n";
 
 const locales = [
   { value: "en-US", label: "English (US)" },
@@ -23,42 +24,60 @@ const locales = [
   { value: "ar-SA", label: "\u0627\u0644\u0639\u0631\u0628\u064a\u0629 (SA)" },
 ];
 
-function Field({ label, required, value, onChange, placeholder, multiline, hint, error, suffix }: {
+function Field({ label, required, value, onChange, placeholder, multiline, hint, error, suffix, maxLength }: {
   label: string; required?: boolean; value: string; onChange: (val: string) => void;
-  placeholder?: string; multiline?: boolean; hint?: string; error?: string; suffix?: React.ReactNode;
+  placeholder?: string; multiline?: boolean; hint?: string; error?: string; suffix?: React.ReactNode; maxLength?: number;
 }) {
+  const overLimit = maxLength !== undefined && value.length > maxLength;
+  const displayError = error || (overLimit ? `Max ${maxLength} characters` : undefined);
   return (
     <div className="space-y-1">
-      <label className="text-[12px] font-medium text-foreground/70">
-        {label}{required && <span className="ml-0.5 text-primary">*</span>}
-      </label>
+      <div className="flex items-center justify-between">
+        <label className="text-[12px] font-medium text-foreground/70">
+          {label}{required && <span className="ml-0.5 text-primary">*</span>}
+        </label>
+        {maxLength !== undefined && value.length > 0 && (
+          <span className={cn("text-[10px] tabular-nums", overLimit ? "text-destructive" : "text-muted-foreground/50")}>{value.length}/{maxLength}</span>
+        )}
+      </div>
       {multiline ? (
         <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={3}
-          className="w-full rounded-lg border border-border bg-background/50 px-3 py-2 text-[13px] resize-none placeholder:text-muted-foreground/40 focus:border-primary/50 focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all" />
+          className={cn("w-full rounded-lg border bg-background/50 px-3 py-2 text-[13px] resize-none placeholder:text-muted-foreground/40 focus:border-primary/50 focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all",
+            displayError ? "border-destructive/50" : "border-border")} />
       ) : (
         <div className="relative">
           <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
             className={cn("h-9 w-full rounded-lg border bg-background/50 px-3 text-[13px] placeholder:text-muted-foreground/40 focus:border-primary/50 focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all",
-              error ? "border-destructive/50" : "border-border", suffix ? "pr-8" : "")} />
+              displayError ? "border-destructive/50" : "border-border", suffix ? "pr-8" : "")} />
           {suffix && <div className="absolute right-2.5 top-1/2 -translate-y-1/2">{suffix}</div>}
         </div>
       )}
-      {error && <p className="text-[11px] text-destructive/70">{error}</p>}
-      {hint && !error && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+      {displayError && <p className="text-[11px] text-destructive/70">{displayError}</p>}
+      {hint && !displayError && <p className="text-[11px] text-muted-foreground">{hint}</p>}
     </div>
   );
 }
 
 function TagsInput({ value, onChange }: { value: string[]; onChange: (tags: string[]) => void }) {
   const [input, setInput] = useState("");
-  const addTag = () => { const tag = input.trim(); if (tag && !value.includes(tag)) { onChange([...value, tag]); setInput(""); } };
+  const atLimit = value.length >= 16;
+  const addTag = () => {
+    const tag = input.trim().slice(0, 40);
+    if (tag && !value.includes(tag) && !atLimit) { onChange([...value, tag]); setInput(""); }
+  };
   return (
     <div className="space-y-1">
-      <label className="text-[12px] font-medium text-foreground/70">Tags</label>
+      <div className="flex items-center justify-between">
+        <label className="text-[12px] font-medium text-foreground/70">Tags</label>
+        {value.length > 0 && (
+          <span className={cn("text-[10px] tabular-nums", atLimit ? "text-destructive" : "text-muted-foreground/50")}>{value.length}/16</span>
+        )}
+      </div>
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {value.map((tag) => (
-            <span key={tag} className="flex items-center gap-1 rounded-md bg-primary/8 px-2 py-0.5 text-[11px] font-medium text-primary/80">
+            <span key={tag} className={cn("flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium",
+              tag.length > 40 ? "bg-destructive/10 text-destructive" : "bg-primary/8 text-primary/80")}>
               {tag}
               <button onClick={() => onChange(value.filter((t) => t !== tag))} className="hover:text-destructive"><X className="h-2.5 w-2.5" /></button>
             </span>
@@ -66,7 +85,9 @@ function TagsInput({ value, onChange }: { value: string[]; onChange: (tags: stri
         </div>
       )}
       <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addTag())}
-        placeholder="Type and press Enter..." className="h-8 w-full rounded-lg border border-border bg-background/50 px-3 text-[12px] placeholder:text-muted-foreground/40 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all" />
+        disabled={atLimit} placeholder={atLimit ? "Maximum 16 tags reached" : "Type and press Enter (max 40 chars)..."}
+        className={cn("h-8 w-full rounded-lg border border-border bg-background/50 px-3 text-[12px] placeholder:text-muted-foreground/40 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all",
+          "disabled:cursor-not-allowed disabled:opacity-40")} />
     </div>
   );
 }
@@ -74,6 +95,7 @@ function TagsInput({ value, onChange }: { value: string[]; onChange: (tags: stri
 export function StepMetadata() {
   const { manifest, setPackageIdentifier, setPackageVersion, setDefaultLocale, setLocale, setStep, addAdditionalLocale, updateAdditionalLocale, removeAdditionalLocale } = useManifestStore();
   const activeSessionToken = useAuthSessionStore((s) => s.activeSessionToken);
+  const t = useT();
   const [showOptional, setShowOptional] = useState(false);
   const [showLocales, setShowLocales] = useState(!!manifest.additionalLocales?.length);
   const locale = manifest.locale;
@@ -106,7 +128,12 @@ export function StepMetadata() {
 
   const isValid = manifest.packageIdentifier.includes(".") && idFormatValid &&
     manifest.packageVersion.trim() !== "" && locale.publisher.trim() !== "" &&
-    locale.packageName.trim() !== "" && locale.license.trim() !== "" && locale.shortDescription.trim() !== "";
+    locale.packageName.trim() !== "" && locale.license.trim() !== "" && locale.shortDescription.trim() !== "" &&
+    locale.publisher.length <= 256 && locale.packageName.length <= 256 &&
+    locale.license.length <= 512 && locale.shortDescription.length <= 256 &&
+    (locale.description || "").length <= 10000 && (locale.author || "").length <= 256 &&
+    (locale.moniker || "").length <= 40 && (locale.tags || []).length <= 16 &&
+    (locale.tags || []).every((t) => t.length <= 40);
 
   const handleAddLocale = () => {
     const used = [locale.packageLocale, ...(manifest.additionalLocales || []).map((l) => l.packageLocale)];
@@ -119,22 +146,22 @@ export function StepMetadata() {
   return (
     <div className="space-y-6">
       <div>
-        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><span>Step 2 of 4</span></div>
-        <h2 className="text-xl font-semibold tracking-tight">Package Metadata</h2>
+        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><span>{t("metadata.step")}</span></div>
+        <h2 className="text-xl font-semibold tracking-tight">{t("metadata.title")}</h2>
         <p className="mt-1.5 text-[13px] text-muted-foreground leading-relaxed">
-          Provide information about your package. Fields marked with <span className="text-primary">*</span> are required by WinGet.
+          {t("metadata.desc")}
         </p>
       </div>
 
       <section className="space-y-3 rounded-xl border border-border bg-card/50 p-5">
-        <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Identity</h3>
+        <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t("metadata.identity")}</h3>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Package Identifier" required value={manifest.packageIdentifier} onChange={setPackageIdentifier}
-            placeholder="Publisher.PackageName" hint={idStatus === "exists" ? "Exists in winget-pkgs" : idStatus === "available" ? "New package" : "Format: Publisher.Package"}
-            error={idStatus === "invalid" ? "Format: Publisher.Package (letters/numbers)" : undefined} suffix={idSuffix} />
-          <Field label="Version" required value={manifest.packageVersion} onChange={setPackageVersion} placeholder="1.0.0" />
+          <Field label={t("metadata.packageId")} required value={manifest.packageIdentifier} onChange={setPackageIdentifier}
+            placeholder="Publisher.PackageName" hint={idStatus === "exists" ? t("metadata.existsWarning") : idStatus === "available" ? t("metadata.newPackage") : t("metadata.idHint")}
+            error={idStatus === "invalid" ? t("metadata.idHint") : undefined} suffix={idSuffix} />
+          <Field label={t("metadata.version")} required value={manifest.packageVersion} onChange={setPackageVersion} placeholder="1.0.0" />
           <div className="space-y-1">
-            <label className="flex items-center gap-1.5 text-[12px] font-medium text-foreground/70"><Globe className="h-3 w-3" />Locale</label>
+            <label className="flex items-center gap-1.5 text-[12px] font-medium text-foreground/70"><Globe className="h-3 w-3" />{t("metadata.defaultLocale")}</label>
             <select value={locale.packageLocale} onChange={(e) => { setDefaultLocale(e.target.value); setLocale({ packageLocale: e.target.value }); }}
               className="h-9 w-full rounded-lg border border-border bg-background/50 px-3 text-[13px] focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all">
               {locales.map((l) => (<option key={l.value} value={l.value}>{l.label}</option>))}
@@ -146,36 +173,36 @@ export function StepMetadata() {
       <section className="space-y-3 rounded-xl border border-border bg-card/50 p-5">
         <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Required</h3>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Publisher" required value={locale.publisher} onChange={(v) => setLocale({ publisher: v })} placeholder="Company or author name" />
-          <Field label="Package Name" required value={locale.packageName} onChange={(v) => setLocale({ packageName: v })} placeholder="My Application" />
+          <Field label={t("metadata.publisher")} required value={locale.publisher} onChange={(v) => setLocale({ publisher: v })} placeholder="Company or author name" maxLength={256} />
+          <Field label={t("metadata.packageName")} required value={locale.packageName} onChange={(v) => setLocale({ packageName: v })} placeholder="My Application" maxLength={256} />
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="License" required value={locale.license} onChange={(v) => setLocale({ license: v })} placeholder="MIT" />
-          <Field label="Short Description" required value={locale.shortDescription} onChange={(v) => setLocale({ shortDescription: v })} placeholder="A brief description" />
+          <Field label={t("metadata.license")} required value={locale.license} onChange={(v) => setLocale({ license: v })} placeholder="MIT" maxLength={512} />
+          <Field label={t("metadata.shortDescription")} required value={locale.shortDescription} onChange={(v) => setLocale({ shortDescription: v })} placeholder="A brief description" maxLength={256} />
         </div>
       </section>
 
       <section className="rounded-xl border border-border bg-card/50 overflow-hidden">
         <button onClick={() => setShowOptional(!showOptional)} className="flex w-full items-center justify-between px-5 py-3.5 text-left transition-colors hover:bg-accent/30">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Optional Fields</h3>
+          <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t("metadata.optional")}</h3>
           <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform duration-200", showOptional && "rotate-180")} />
         </button>
         {showOptional && (
           <div className="space-y-3 border-t border-border px-5 py-4 animate-fade-in">
-            <Field label="Description" value={locale.description || ""} onChange={(v) => setLocale({ description: v })} placeholder="A longer description..." multiline />
+            <Field label={t("metadata.description")} value={locale.description || ""} onChange={(v) => setLocale({ description: v })} placeholder="A longer description..." multiline maxLength={10000} />
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Publisher URL" value={locale.publisherUrl || ""} onChange={(v) => setLocale({ publisherUrl: v })} placeholder="https://..." />
-              <Field label="Publisher Support URL" value={locale.publisherSupportUrl || ""} onChange={(v) => setLocale({ publisherSupportUrl: v })} placeholder="https://..." />
-              <Field label="Package URL" value={locale.packageUrl || ""} onChange={(v) => setLocale({ packageUrl: v })} placeholder="https://..." />
-              <Field label="License URL" value={locale.licenseUrl || ""} onChange={(v) => setLocale({ licenseUrl: v })} placeholder="https://..." />
-              <Field label="Privacy URL" value={locale.privacyUrl || ""} onChange={(v) => setLocale({ privacyUrl: v })} placeholder="https://..." />
-              <Field label="Copyright" value={locale.copyright || ""} onChange={(v) => setLocale({ copyright: v })} placeholder="Copyright (c) ..." />
-              <Field label="Copyright URL" value={locale.copyrightUrl || ""} onChange={(v) => setLocale({ copyrightUrl: v })} placeholder="https://..." />
-              <Field label="Author" value={locale.author || ""} onChange={(v) => setLocale({ author: v })} />
-              <Field label="Moniker" value={locale.moniker || ""} onChange={(v) => setLocale({ moniker: v })} placeholder="Short alias (e.g. vscode)" hint="Used for quick search" />
+              <Field label={t("metadata.publisherUrl")} value={locale.publisherUrl || ""} onChange={(v) => setLocale({ publisherUrl: v })} placeholder="https://..." />
+              <Field label={t("metadata.publisherSupportUrl")} value={locale.publisherSupportUrl || ""} onChange={(v) => setLocale({ publisherSupportUrl: v })} placeholder="https://..." />
+              <Field label={t("metadata.packageUrl")} value={locale.packageUrl || ""} onChange={(v) => setLocale({ packageUrl: v })} placeholder="https://..." />
+              <Field label={t("metadata.licenseUrl")} value={locale.licenseUrl || ""} onChange={(v) => setLocale({ licenseUrl: v })} placeholder="https://..." />
+              <Field label={t("metadata.privacyUrl")} value={locale.privacyUrl || ""} onChange={(v) => setLocale({ privacyUrl: v })} placeholder="https://..." />
+              <Field label={t("metadata.copyright")} value={locale.copyright || ""} onChange={(v) => setLocale({ copyright: v })} placeholder="Copyright (c) ..." />
+              <Field label={t("metadata.copyrightUrl")} value={locale.copyrightUrl || ""} onChange={(v) => setLocale({ copyrightUrl: v })} placeholder="https://..." />
+              <Field label={t("metadata.author")} value={locale.author || ""} onChange={(v) => setLocale({ author: v })} maxLength={256} />
+              <Field label={t("metadata.moniker")} value={locale.moniker || ""} onChange={(v) => setLocale({ moniker: v })} placeholder="Short alias (e.g. vscode)" maxLength={40} />
             </div>
-            <Field label="Release Notes" value={locale.releaseNotes || ""} onChange={(v) => setLocale({ releaseNotes: v })} placeholder="What's new..." multiline />
-            <Field label="Release Notes URL" value={locale.releaseNotesUrl || ""} onChange={(v) => setLocale({ releaseNotesUrl: v })} placeholder="https://..." />
+            <Field label={t("metadata.releaseNotes")} value={locale.releaseNotes || ""} onChange={(v) => setLocale({ releaseNotes: v })} placeholder="What's new..." multiline />
+            <Field label={t("metadata.releaseNotesUrl")} value={locale.releaseNotesUrl || ""} onChange={(v) => setLocale({ releaseNotesUrl: v })} placeholder="https://..." />
             <TagsInput value={locale.tags || []} onChange={(tags) => setLocale({ tags })} />
           </div>
         )}
@@ -185,7 +212,7 @@ export function StepMetadata() {
       <section className="rounded-xl border border-border bg-card/50 overflow-hidden">
         <button onClick={() => setShowLocales(!showLocales)} className="flex w-full items-center justify-between px-5 py-3.5 text-left transition-colors hover:bg-accent/30">
           <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
-            <Languages className="h-3 w-3" />Additional Locales
+            <Languages className="h-3 w-3" />{t("metadata.additionalLocales")}
             {manifest.additionalLocales?.length ? <span className="rounded-full bg-primary/10 px-1.5 py-px text-[10px] text-primary">{manifest.additionalLocales.length}</span> : null}
           </h3>
           <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform duration-200", showLocales && "rotate-180")} />
@@ -218,7 +245,7 @@ export function StepMetadata() {
             })}
             <button onClick={handleAddLocale}
               className="flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border text-[12px] font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary/70">
-              <Plus className="h-3 w-3" />Add locale
+              <Plus className="h-3 w-3" />{t("metadata.addLocale")}
             </button>
           </div>
         )}
@@ -226,12 +253,12 @@ export function StepMetadata() {
 
       <div className="flex items-center justify-between pt-1">
         <button onClick={() => setStep("installer")} className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
-          <ArrowLeft className="h-3.5 w-3.5" />Back
+          <ArrowLeft className="h-3.5 w-3.5" />{t("metadata.back")}
         </button>
         <button onClick={() => setStep("review")} disabled={!isValid} data-action="primary"
           className={cn("flex items-center gap-2 rounded-lg px-5 py-2 text-[13px] font-medium transition-all duration-200",
             "bg-primary text-white hover:brightness-110 active:scale-[0.98]", "disabled:cursor-not-allowed disabled:opacity-40")}>
-          Continue<ArrowRight className="h-3.5 w-3.5" />
+          {t("metadata.continue")}<ArrowRight className="h-3.5 w-3.5" />
         </button>
       </div>
     </div>

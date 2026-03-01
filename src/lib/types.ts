@@ -219,4 +219,4 @@ export interface SubmissionEntry {
   user: string;
 }
 
-export type WizardStep = "home" | "installer" | "metadata" | "review" | "submit";
+export type WizardStep = "home" | "installer" | "metadata" | "review" | "submit" | "settings";

@@ -9,11 +9,14 @@ import { StepInstaller } from "@/pages/StepInstaller";
 import { StepMetadata } from "@/pages/StepMetadata";
 import { StepReview } from "@/pages/StepReview";
 import StepSubmit from "@/pages/StepSubmit";
+import { Settings } from "@/pages/Settings";
 import type { AppUpdateInfo } from "@/lib/types";
-import { CheckCircle2, AlertCircle, Info, X, Minus, Square, Copy, Download, X as XIcon } from "lucide-react";
+import { CheckCircle2, AlertCircle, Info, X, Minus, Square, Copy, Download, X as XIcon, Settings as SettingsIcon } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ProfileButton } from "@/components/ProfileButton";
+import { useSettingsStore } from "@/stores/settings-store";
+import { useT } from "@/lib/i18n";
 import logoMarkUrl from "@/assets/logo-mark.png";
 
 const appWindow = getCurrentWindow();
@@ -44,8 +47,9 @@ function Toasts() {
 }
 
 function TitleBar() {
+  const t = useT();
   const currentStep = useManifestStore((s) => s.currentStep);
-  const isHome = currentStep === "home";
+  const isHome = currentStep === "home" || currentStep === "settings";
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -83,7 +87,18 @@ function TitleBar() {
         {!isHome && <StepperHeader />}
       </div>
 
-      {/* Profile */}
+      {/* Settings + Profile */}
+      <button
+        onClick={() => useManifestStore.getState().setStep(
+          useManifestStore.getState().currentStep === "settings" ? "home" : "settings"
+        )}
+        className="flex h-7 items-center gap-1.5 rounded-md px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground mr-1"
+        data-no-drag
+        title="Settings"
+      >
+        <SettingsIcon className="h-3.5 w-3.5" />
+        <span className="text-[11px] font-medium">{t("settings.label")}</span>
+      </button>
       <ProfileButton />
 
       {/* Right: Window controls */}
@@ -122,6 +137,7 @@ function AppUpdatePopup({
   onPrimaryAction: () => void;
   isApplying: boolean;
 }) {
+  const t = useT();
   const publishedLabel = info.publishedAt
     ? new Date(info.publishedAt).toLocaleDateString()
     : null;
@@ -132,17 +148,17 @@ function AppUpdatePopup({
       <div className="pointer-events-auto rounded-xl border border-primary/20 bg-card/95 p-4 shadow-2xl backdrop-blur animate-slide-in">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-[13px] font-semibold text-foreground">Update available</h3>
+            <h3 className="text-[13px] font-semibold text-foreground">{t("update.available")}</h3>
             <p className="mt-1 text-[12px] text-muted-foreground">
-              UniCreate {info.latestVersion} is available
-              {publishedLabel ? ` (published ${publishedLabel})` : ""}.
+              {t("update.isAvailable", { v: info.latestVersion })}
+              {publishedLabel ? ` (${publishedLabel})` : ""}
             </p>
             <p className="mt-1 text-[11px] text-muted-foreground/90">
-              Current version: {info.currentVersion}
+              {t("update.currentVersion", { v: info.currentVersion })}
             </p>
             {info.downloadName && (
               <p className="mt-1 text-[11px] text-muted-foreground/90">
-                Installer: {info.downloadName}
+                {t("update.installer", { n: info.downloadName })}
               </p>
             )}
           </div>
@@ -168,7 +184,7 @@ function AppUpdatePopup({
             disabled={isApplying}
             className="h-8 rounded-md border border-border px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            Later
+            {t("update.later")}
           </button>
           <button
             onClick={onPrimaryAction}
@@ -176,7 +192,7 @@ function AppUpdatePopup({
             className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[12px] font-medium text-white transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Download className="h-3.5 w-3.5" />
-            {isApplying ? "Updating..." : "Update"}
+            {isApplying ? t("update.updating") : t("update.update")}
           </button>
         </div>
       </div>
@@ -186,10 +202,30 @@ function AppUpdatePopup({
 
 function App() {
   const currentStep = useManifestStore((s) => s.currentStep);
-  const isHome = currentStep === "home";
+  const isHome = currentStep === "home" || currentStep === "settings";
   const addToast = useToastStore((s) => s.addToast);
   const [appUpdateInfo, setAppUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
+
+  // Apply enterprise policy config on startup
+  useEffect(() => {
+    invoke<string | null>("read_policy_config").then((json) => {
+      if (!json) return;
+      try {
+        const policy = JSON.parse(json) as Record<string, unknown>;
+        const s = useSettingsStore.getState();
+        if (policy.neverSaveSession === true) s.setNeverSaveSession(true);
+        if (typeof policy.ephemeralTimeoutMinutes === "number" && [5, 10, 15, 30].includes(policy.ephemeralTimeoutMinutes)) {
+          s.setEphemeralTimeoutMinutes(policy.ephemeralTimeoutMinutes as 5 | 10 | 15 | 30);
+        }
+        if (typeof policy.proxyUrl === "string") s.setProxyUrl(policy.proxyUrl);
+        if (policy.autoCheckUpdates === false) s.setAutoCheckUpdates(false);
+        if (typeof policy.language === "string" && ["en", "fr"].includes(policy.language)) {
+          s.setLanguage(policy.language as "en" | "fr");
+        }
+      } catch { /* invalid policy JSON, ignore */ }
+    }).catch(() => {});
+  }, []);
 
   // Sync history store active user with auth session
   const savedSessionUser = useAuthSessionStore((s) => s.savedSessionUser);
@@ -213,7 +249,31 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Sync proxy setting to backend on app start
+  const proxyUrl = useSettingsStore((s) => s.proxyUrl);
   useEffect(() => {
+    invoke("set_proxy", { url: proxyUrl }).catch(() => {});
+  }, [proxyUrl]);
+
+  // Auto-lock session when window regains visibility (covers Win+L, sleep, etc.)
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      const state = useAuthSessionStore.getState();
+      if (!state.activeSessionToken || state.hasSavedSession) return;
+      if (state.isEphemeralSessionExpired()) {
+        state.clearSession();
+        addToast("Session locked for security. Please sign in again.", "info");
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [addToast]);
+
+  const autoCheckUpdates = useSettingsStore((s) => s.autoCheckUpdates);
+
+  useEffect(() => {
+    if (!autoCheckUpdates) return;
     let cancelled = false;
 
     const checkUpdate = async () => {
@@ -232,7 +292,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [autoCheckUpdates]);
 
   const dismissUpdatePopup = () => {
     if (appUpdateInfo) {
@@ -276,6 +336,7 @@ function App() {
           key={currentStep}
         >
           {currentStep === "home" && <Home />}
+          {currentStep === "settings" && <Settings />}
           {currentStep === "installer" && <StepInstaller />}
           {currentStep === "metadata" && <StepMetadata />}
           {currentStep === "review" && <StepReview />}

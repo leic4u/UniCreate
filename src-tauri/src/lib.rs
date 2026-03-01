@@ -107,6 +107,11 @@ async fn fetch_existing_manifest(package_id: String, token: Option<String>) -> R
 }
 
 #[tauri::command]
+async fn fetch_existing_yaml_files(package_id: String, version: String, token: Option<String>) -> Result<Vec<YamlFile>, String> {
+    github::fetch_existing_yaml_files(&package_id, &version, token.as_deref()).await
+}
+
+#[tauri::command]
 async fn fetch_repo_metadata(url: String, token: Option<String>) -> Result<github::RepoMetadata, String> {
     github::fetch_repo_metadata(&url, token.as_deref()).await
 }
@@ -180,8 +185,9 @@ async fn submit_manifest(
     yaml_files: Vec<YamlFile>,
     package_id: String,
     version: String,
+    is_update: bool,
 ) -> Result<String, String> {
-    github::submit_manifest(&token, &yaml_files, &package_id, &version).await
+    github::submit_manifest(&token, &yaml_files, &package_id, &version, is_update).await
 }
 
 #[tauri::command]
@@ -201,6 +207,71 @@ fn get_github_token() -> Result<Option<String>, String> {
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(format!("Cannot get token: {}", e)),
     }
+}
+
+#[tauri::command]
+fn set_proxy(url: String) {
+    github::set_proxy_url(&url);
+}
+
+#[tauri::command]
+fn write_audit_log(entry: String) -> Result<(), String> {
+    let log_dir = dirs::data_local_dir()
+        .ok_or("Cannot find local data directory")?
+        .join("UniCreate");
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("Cannot create log directory: {}", e))?;
+    let log_file = log_dir.join("audit.log");
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .map_err(|e| format!("Cannot open audit log: {}", e))?;
+    // Sanitize: strip newlines and carriage returns to prevent log injection
+    let sanitized = entry.replace('\n', " ").replace('\r', "");
+    writeln!(file, "{}", sanitized)
+        .map_err(|e| format!("Cannot write audit log: {}", e))
+}
+
+#[tauri::command]
+fn get_audit_log_path() -> Result<String, String> {
+    let log_dir = dirs::data_local_dir()
+        .ok_or("Cannot find local data directory")?
+        .join("UniCreate");
+    Ok(log_dir.join("audit.log").to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_audit_log_folder() -> Result<(), String> {
+    let log_dir = dirs::data_local_dir()
+        .ok_or("Cannot find local data directory")?
+        .join("UniCreate");
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("Cannot create log directory: {}", e))?;
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(log_dir.as_os_str())
+            .spawn()
+            .map_err(|e| format!("Cannot open folder: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn read_policy_config() -> Result<Option<String>, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Cannot locate exe: {}", e))?;
+    let policy_file = exe.parent()
+        .ok_or("Cannot determine app directory")?
+        .join("unicreate.policy.json");
+    if !policy_file.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&policy_file)
+        .map_err(|e| format!("Cannot read policy file: {}", e))?;
+    Ok(Some(content))
 }
 
 #[tauri::command]
@@ -225,6 +296,7 @@ pub fn run() {
             generate_yaml,
             save_yaml_files,
             fetch_existing_manifest,
+            fetch_existing_yaml_files,
             fetch_repo_metadata,
             check_package_exists,
             check_app_update,
@@ -240,6 +312,11 @@ pub fn run() {
             store_github_token,
             get_github_token,
             clear_github_token,
+            set_proxy,
+            write_audit_log,
+            get_audit_log_path,
+            open_audit_log_folder,
+            read_policy_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

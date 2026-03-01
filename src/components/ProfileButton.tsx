@@ -10,9 +10,11 @@ import {
   Github, LogOut, RefreshCw, Loader2, Copy, Check,
   ExternalLink, X, Lock, Unlock,
 } from "lucide-react";
+import { useT } from "@/lib/i18n";
+import { useSettingsStore } from "@/stores/settings-store";
 
 function parseRecoveredPr(pr: RecoveredPr): SubmissionEntry {
-  const match = pr.title.match(/^New version:\s+(.+?)\s+version\s+(.+)$/i);
+  const match = pr.title.match(/^New (?:version|package):\s+(.+?)\s+version\s+(.+)$/i);
   return {
     packageId: match?.[1]?.trim() || pr.title,
     version: match?.[2]?.trim() || "-",
@@ -36,14 +38,16 @@ export function ProfileButton() {
   const { mergeRecoveredSubmissions } = useHistoryStore();
   const addToast = useToastStore((s) => s.addToast);
 
+  const t = useT();
+  const neverSaveSession = useSettingsStore((s) => s.neverSaveSession);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [rememberSession, setRememberSession] = useState(false);
+  const [rememberSession, setRememberSession] = useState(!neverSaveSession);
   const [isRecovering, setIsRecovering] = useState(false);
   const [flowStarted, setFlowStarted] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const df = useDeviceFlow(rememberSession);
+  const df = useDeviceFlow(neverSaveSession ? false : rememberSession);
 
   // Load saved session on mount
   useEffect(() => {
@@ -167,7 +171,7 @@ export function ProfileButton() {
             className="flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <Github className="h-3 w-3" />
-            Connect
+            {t("profile.connect")}
           </button>
         )}
 
@@ -183,7 +187,7 @@ export function ProfileButton() {
               )}
               <div className="min-w-0">
                 <p className="truncate text-[12px] font-semibold text-foreground">@{savedSessionUser}</p>
-                <p className="text-[10px] text-muted-foreground">{hasSavedSession ? "Saved session" : "Ephemeral session"}</p>
+                <p className="text-[10px] text-muted-foreground">{hasSavedSession ? t("profile.savedSession") : t("profile.ephemeralSession", { n: useSettingsStore.getState().ephemeralTimeoutMinutes })}</p>
               </div>
             </div>
             <div className="py-1">
@@ -193,14 +197,14 @@ export function ProfileButton() {
                 className="flex w-full items-center gap-2 px-3 py-2 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >
                 <RefreshCw className={cn("h-3.5 w-3.5", isRecovering && "animate-spin")} />
-                {isRecovering ? "Recovering..." : "Recover PRs"}
+                {isRecovering ? t("profile.recovering") : t("profile.recoverPrs")}
               </button>
               <button
                 onClick={handleDisconnect}
                 className="flex w-full items-center gap-2 px-3 py-2 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
               >
                 <LogOut className="h-3.5 w-3.5" />
-                Disconnect
+                {t("profile.disconnect")}
               </button>
             </div>
           </div>
@@ -217,8 +221,8 @@ export function ProfileButton() {
                   <Github className="h-4 w-4 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-[13px] font-semibold">Sign in with GitHub</h3>
-                  <p className="text-[11px] text-muted-foreground">Use GitHub Device Flow</p>
+                  <h3 className="text-[13px] font-semibold">{t("profile.signIn")}</h3>
+                  <p className="text-[11px] text-muted-foreground">{t("profile.deviceFlow")}</p>
                 </div>
               </div>
               <button onClick={() => { df.cancel(); setShowAuthModal(false); setFlowStarted(false); }} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
@@ -229,7 +233,7 @@ export function ProfileButton() {
             {df.flow && df.polling ? (
               <div className="space-y-3 animate-fade-in">
                 <div className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 p-4">
-                  <p className="text-[12px] text-muted-foreground">Enter this code on GitHub:</p>
+                  <p className="text-[12px] text-muted-foreground">{t("profile.enterCode")}</p>
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono text-lg font-bold tracking-[0.2em] text-foreground">{df.flow.userCode}</span>
                     <button onClick={df.copyCode} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
@@ -238,32 +242,34 @@ export function ProfileButton() {
                   </div>
                   <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" />
-                    Waiting for authorization...
+                    {t("profile.waiting")}
                   </div>
                 </div>
                 <button onClick={df.reopenGitHub} className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-border text-[13px] font-medium transition-all hover:bg-accent hover:text-foreground">
                   <ExternalLink className="h-3.5 w-3.5" />
-                  Open GitHub again
+                  {t("profile.openGithub")}
                 </button>
                 <button onClick={() => { df.cancel(); setShowAuthModal(false); setFlowStarted(false); }} className="flex h-8 w-full items-center justify-center text-[12px] text-muted-foreground transition-colors hover:text-foreground">
-                  Cancel
+                  {t("profile.cancel")}
                 </button>
               </div>
             ) : (
               <div className="space-y-3">
                 <button onClick={df.start} className="flex h-10 w-full items-center justify-center gap-2.5 rounded-lg bg-[#24292e] text-[13px] font-medium text-white transition-all hover:bg-[#2f363d]">
                   <Github className="h-4 w-4" />
-                  Sign in with GitHub
+                  {t("profile.signIn")}
                 </button>
-                <div className="flex items-center justify-center">
-                  <label className="flex cursor-pointer items-center gap-1.5">
-                    <input type="checkbox" checked={rememberSession} onChange={(e) => setRememberSession(e.target.checked)} className="h-3 w-3 rounded border-border accent-primary" />
-                    <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                      {rememberSession ? <Lock className="h-2.5 w-2.5" /> : <Unlock className="h-2.5 w-2.5" />}
-                      Remember session
-                    </span>
-                  </label>
-                </div>
+                {!neverSaveSession && (
+                  <div className="flex items-center justify-center">
+                    <label className="flex cursor-pointer items-center gap-1.5">
+                      <input type="checkbox" checked={rememberSession} onChange={(e) => setRememberSession(e.target.checked)} className="h-3 w-3 rounded border-border accent-primary" />
+                      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                        {rememberSession ? <Lock className="h-2.5 w-2.5" /> : <Unlock className="h-2.5 w-2.5" />}
+                        {t("profile.remember")}
+                      </span>
+                    </label>
+                  </div>
+                )}
               </div>
             )}
 
